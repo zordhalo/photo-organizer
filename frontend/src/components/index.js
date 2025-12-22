@@ -5,3 +5,4 @@
 
 export { default as ConnectionStatus } from './ConnectionStatus';
 export { default as ProgressTracker } from './ProgressTracker';
+export { default as UploadQueue } from './UploadQueue';

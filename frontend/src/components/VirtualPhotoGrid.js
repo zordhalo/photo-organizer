@@ -56,24 +56,38 @@ class VirtualPhotoGrid {
   createPhotoCard(photo, index) {
     const card = document.createElement('div');
     card.className = 'photo-card';
-    
     const row = Math.floor(index / this.itemsPerRow);
     const col = index % this.itemsPerRow;
-    
     card.style.position = 'absolute';
     card.style.top = `${row * this.itemHeight}px`;
     card.style.left = `${col * (100 / this.itemsPerRow)}%`;
     card.style.width = `${100 / this.itemsPerRow}%`;
     card.style.height = `${this.itemHeight}px`;
-    
+
+    // Highlight based on confidence
+    let highlightClass = '';
+    if (photo.confidence >= 0.9) highlightClass = 'high-confidence';
+    else if (photo.confidence >= 0.7) highlightClass = 'medium-confidence';
+    else highlightClass = 'low-confidence';
+    card.classList.add(highlightClass);
+
+    // Overlay for category
+    const overlay = `<div class="category-overlay ${photo.category}">${photo.category}</div>`;
+
     card.innerHTML = `
-      <img src="${photo.thumbnail}" loading="lazy" alt="${photo.filename}">
+      <div class="photo-thumb-wrapper">
+        <img src="${photo.thumbnail}" loading="lazy" alt="${photo.filename}">
+        ${overlay}
+      </div>
       <div class="photo-info">
         <span class="category">${photo.category}</span>
         <span class="confidence">${Math.round(photo.confidence * 100)}%</span>
       </div>
     `;
-    
+
+    // Tooltip for details
+    card.title = `File: ${photo.filename}\nCategory: ${photo.category}\nConfidence: ${Math.round(photo.confidence * 100)}%`;
+
     return card;
   }
   

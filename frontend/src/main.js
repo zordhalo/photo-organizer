@@ -6,12 +6,210 @@
 import './styles/main.css';
 import { API_CONFIG, APP_CONFIG, checkApiHealth } from './config/index.js';
 import { connectionManager, apiClient, analysisService } from './services/index.js';
-import { ConnectionStatus, ProgressTracker } from './components/index.js';
+import { ConnectionStatus, ProgressTracker, UploadQueue } from './components/index.js';
 import { notifications } from './utils/notifications.js';
+import VirtualPhotoGrid from './components/VirtualPhotoGrid.js';
+import { stateManager } from './services/stateManager.js';
 
 // Global component instances
 let connectionStatus = null;
 let progressTracker = null;
+let uploadQueue = null;
+let photoGrid = null;
+let sessionId = crypto.randomUUID(); // Session management
+let queuedFiles = [];
+let errorStates = {};
+let filterCategory = 'all';
+let sortBy = 'confidence';
+let analysisPaused = false;
+
+// Drag & Drop and Upload Queue UI
+function setupUploadUI() {
+  const uploadSection = document.createElement('section');
+  uploadSection.className = 'upload-section';
+  uploadSection.innerHTML = `
+    <h2>Upload Photos</h2>
+    <div id="drop-zone" class="drop-zone">Drag & drop files or folders here</div>
+    <div id="upload-queue-container"></div>
+  `;
+  document.querySelector('.main').prepend(uploadSection);
+
+  const dropZone = document.getElementById('drop-zone');
+  const uploadQueueContainer = document.getElementById('upload-queue-container');
+
+  // Drag & drop events
+  dropZone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dropZone.classList.add('drag-over');
+    dropZone.textContent = `Release to upload (${e.dataTransfer.items.length} files)`;
+  });
+  dropZone.addEventListener('dragleave', () => {
+    dropZone.classList.remove('drag-over');
+    dropZone.textContent = 'Drag & drop files or folders here';
+  });
+  dropZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    dropZone.textContent = 'Drag & drop files or folders here';
+    handleFiles(e.dataTransfer.files);
+  });
+
+  // Initial render
+  renderUploadQueue(uploadQueueContainer);
+}
+
+function handleFiles(fileList) {
+  for (const file of fileList) {
+    if (!file.type.startsWith('image/')) {
+      errorStates[file.name] = 'Invalid file type';
+      continue;
+    }
+    if (file.size > APP_CONFIG.MAX_FILE_SIZE) {
+      errorStates[file.name] = 'File too large';
+      continue;
+    }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      queuedFiles.push({ file, previewUrl: e.target.result, size: file.size, type: file.type });
+      renderUploadQueue(document.getElementById('upload-queue-container'));
+    };
+    reader.readAsDataURL(file);
+  }
+  renderUploadQueue(document.getElementById('upload-queue-container'));
+}
+
+function renderUploadQueue(container) {
+  if (!container) return;
+  container.innerHTML = '';
+  uploadQueue = UploadQueue({
+    files: queuedFiles,
+    onRemove: (idx) => {
+      queuedFiles.splice(idx, 1);
+      renderUploadQueue(container);
+    },
+    onStartAnalysis: startBatchAnalysis,
+    errorStates
+  });
+  container.appendChild(uploadQueue);
+}
+
+function setupPauseResumeUI() {
+  const pauseResumeBar = document.createElement('div');
+  pauseResumeBar.className = 'pause-resume-bar';
+  pauseResumeBar.innerHTML = `
+    <button id="pause-analysis-btn">Pause Analysis</button>
+    <button id="resume-analysis-btn" style="display:none;">Resume Analysis</button>
+  `;
+  document.querySelector('.main').prepend(pauseResumeBar);
+
+  const pauseBtn = document.getElementById('pause-analysis-btn');
+  const resumeBtn = document.getElementById('resume-analysis-btn');
+
+  pauseBtn.addEventListener('click', () => {
+    analysisPaused = true;
+    pauseBtn.style.display = 'none';
+    resumeBtn.style.display = 'inline-block';
+    notifications.info('Analysis paused');
+  });
+  resumeBtn.addEventListener('click', () => {
+    analysisPaused = false;
+    pauseBtn.style.display = 'inline-block';
+    resumeBtn.style.display = 'none';
+    notifications.info('Analysis resumed');
+  });
+}
+
+// In startBatchAnalysis, check for pause
+async function startBatchAnalysis() {
+  // Send files to backend with sessionId
+  try {
+    for (let i = 0; i < queuedFiles.length; i++) {
+      while (analysisPaused) {
+        await new Promise(res => setTimeout(res, 500));
+      }
+      const result = await apiClient.analyze(queuedFiles[i].file, sessionId);
+      handleAnalysisResults([result]);
+    }
+    notifications.success('Batch upload and analysis complete');
+    queuedFiles = [];
+    errorStates = {};
+    renderUploadQueue(document.getElementById('upload-queue-container'));
+  } catch (err) {
+    notifications.error('Upload failed: ' + err.message);
+    // Keep files in queue
+  }
+}
+
+// Update stateManager when new analysis results arrive
+function handleAnalysisResults(results) {
+  results.forEach(result => {
+    stateManager.addPhoto({
+      id: crypto.randomUUID(),
+      filename: result.filename,
+      thumbnail: result.thumbnail || result.base64 || '',
+      category: result.category || 'unknown',
+      confidence: result.confidence || 0,
+      analyzedAt: Date.now(),
+      sessionId,
+      error: result.error || null
+    });
+  });
+}
+
+// Retry failed files UI
+function setupRetryFailedUI() {
+  const retryBar = document.createElement('div');
+  retryBar.className = 'retry-failed-bar';
+  retryBar.innerHTML = `<button id="retry-failed-btn">Retry Failed Files</button>`;
+  document.querySelector('.main').prepend(retryBar);
+  document.getElementById('retry-failed-btn').addEventListener('click', async () => {
+    const failedPhotos = stateManager.getState().photos.filter(p => p.error);
+    if (!failedPhotos.length) {
+      notifications.info('No failed files to retry');
+      return;
+    }
+    notifications.info(`Retrying ${failedPhotos.length} failed files...`);
+    for (const photo of failedPhotos) {
+      try {
+        const result = await apiClient.analyzeSingle(photo.thumbnail, photo.filename);
+        stateManager.updatePhoto(photo.id, {
+          category: result.category || 'unknown',
+          confidence: result.confidence || 0,
+          error: null
+        });
+      } catch (err) {
+        stateManager.updatePhoto(photo.id, { error: err.message });
+      }
+    }
+  });
+}
+
+function setupCSVExportUI() {
+  const exportBar = document.createElement('div');
+  exportBar.className = 'csv-export-bar';
+  exportBar.innerHTML = `<button id="export-csv-btn">Export Results (CSV)</button>`;
+  document.querySelector('.main').prepend(exportBar);
+  document.getElementById('export-csv-btn').addEventListener('click', () => {
+    const photos = stateManager.getState().photos;
+    if (!photos.length) {
+      notifications.info('No results to export');
+      return;
+    }
+    const csvRows = [
+      'Session ID,Filename,Category,Confidence,Analyzed At,Error',
+      ...photos.map(p => `"${p.sessionId}","${p.filename}","${p.category}",${Math.round(p.confidence * 100)}%,${new Date(p.analyzedAt).toISOString()},"${p.error || ''}"`)
+    ];
+    const csvContent = csvRows.join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `photo-analysis-results-${sessionId}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+    notifications.success('CSV exported successfully');
+  });
+}
 
 /**
  * Initialize the application
@@ -118,6 +316,14 @@ async function initApp() {
   
   // Set up API test buttons
   setupApiTestButtons();
+  
+  // Set up Upload UI
+  setupUploadUI();
+  setupPauseResumeUI();
+  setupRetryFailedUI();
+  setupPhotoGridUI();
+  setupInteractiveFeedbackUI();
+  setupCSVExportUI();
 }
 
 /**
@@ -323,5 +529,219 @@ function formatBytes(bytes) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
-// Initialize the application
-initApp();
+function setupPhotoGridUI() {
+  const gridSection = document.createElement('section');
+  gridSection.className = 'photo-grid-section';
+  gridSection.innerHTML = `
+    <h2>Photo Analysis Results</h2>
+    <div id="photo-filter-bar" class="photo-filter-bar">
+      <label>Filter by Category:</label>
+      <select id="category-filter">
+        <option value="all">All</option>
+        <option value="interior">Interior</option>
+        <option value="exterior">Exterior</option>
+        <option value="mep">MEP</option>
+        <option value="structure">Structure</option>
+        <option value="roofing">Roofing</option>
+        <option value="flooring">Flooring</option>
+        <option value="insulation">Insulation</option>
+        <option value="drywall">Drywall</option>
+        <option value="windows">Windows</option>
+        <option value="doors">Doors</option>
+        <option value="unknown">Unknown</option>
+      </select>
+      <label>Sort by:</label>
+      <select id="sort-by">
+        <option value="confidence">Confidence</option>
+        <option value="filename">Filename</option>
+        <option value="analyzedAt">Analyzed Time</option>
+      </select>
+    </div>
+    <div id="photo-grid-container"></div>
+  `;
+  document.querySelector('.main').prepend(gridSection);
+
+  const categoryFilter = document.getElementById('category-filter');
+  const sortBySelect = document.getElementById('sort-by');
+  const photoGridContainer = document.getElementById('photo-grid-container');
+
+  // Render initial photo grid
+  renderPhotoGrid(photoGridContainer, stateManager.getState().photos);
+
+  categoryFilter.addEventListener('change', () => {
+    filterCategory = categoryFilter.value;
+    renderPhotoGrid(photoGridContainer, stateManager.getState().photos);
+  });
+
+  sortBySelect.addEventListener('change', () => {
+    sortBy = sortBySelect.value;
+    renderPhotoGrid(photoGridContainer, stateManager.getState().photos);
+  });
+}
+
+function renderPhotoGrid(container, photos) {
+  if (!container) return;
+  container.innerHTML = '';
+
+  // Filter and sort photos
+  let filteredPhotos = photos.filter(p => filterCategory === 'all' || p.category === filterCategory);
+  if (sortBy === 'confidence') {
+    filteredPhotos.sort((a, b) => b.confidence - a.confidence);
+  } else if (sortBy === 'filename') {
+    filteredPhotos.sort((a, b) => a.filename.localeCompare(b.filename));
+  } else if (sortBy === 'analyzedAt') {
+    filteredPhotos.sort((a, b) => b.analyzedAt - a.analyzedAt);
+  }
+
+  // Paginate photos
+  const pageSize = 10;
+  const pageCount = Math.ceil(filteredPhotos.length / pageSize);
+  let currentPage = 1;
+
+  function renderPage(page) {
+    const start = (page - 1) * pageSize;
+    const end = start + pageSize;
+    const pagePhotos = filteredPhotos.slice(start, end);
+
+    container.innerHTML = `
+      <div class="photo-grid">
+        ${pagePhotos.map(p => `
+          <div class="photo-card">
+            <img src="${p.thumbnail}" alt="${p.filename}" class="photo-thumbnail">
+            <div class="photo-info">
+              <div class="photo-meta">
+                <span class="photo-category">${p.category || 'Unknown'}</span>
+                <span class="photo-confidence">Confidence: ${Math.round(p.confidence * 100)}%</span>
+              </div>
+              <div class="photo-actions">
+                <button class="btn btn-secondary btn-analyze-again" data-id="${p.id}">Analyze Again</button>
+                <button class="btn btn-danger btn-remove" data-id="${p.id}">Remove</button>
+              </div>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+      <div class="pagination">
+        <button class="btn btn-primary btn-prev" ${currentPage === 1 ? 'disabled' : ''}>« Previous</button>
+        <span class="page-info">Page ${currentPage} of ${pageCount}</span>
+        <button class="btn btn-primary btn-next" ${currentPage === pageCount ? 'disabled' : ''}>Next »</button>
+      </div>
+    `;
+
+    // Attach event listeners for pagination
+    container.querySelector('.btn-prev').addEventListener('click', () => {
+      if (currentPage > 1) {
+        currentPage--;
+        renderPage(currentPage);
+      }
+    });
+    container.querySelector('.btn-next').addEventListener('click', () => {
+      if (currentPage < pageCount) {
+        currentPage++;
+        renderPage(currentPage);
+      }
+    });
+
+    // Attach event listeners for analyze again and remove buttons
+    pagePhotos.forEach(p => {
+      container.querySelector(`.btn-analyze-again[data-id="${p.id}"]`).addEventListener('click', async () => {
+        try {
+          const result = await apiClient.analyzeSingle(p.thumbnail, p.filename);
+          stateManager.updatePhoto(p.id, {
+            category: result.category || 'unknown',
+            confidence: result.confidence || 0,
+            error: null
+          });
+          notifications.success(`Re-analysis complete for ${p.filename}`);
+        } catch (err) {
+          notifications.error(`Re-analysis failed for ${p.filename}: ${err.message}`);
+        }
+      });
+      container.querySelector(`.btn-remove[data-id="${p.id}"]`).addEventListener('click', () => {
+        stateManager.removePhoto(p.id);
+        renderPhotoGrid(container, stateManager.getState().photos);
+        notifications.info(`Removed ${p.filename} from results`);
+      });
+    });
+  }
+
+  renderPage(currentPage);
+}
+
+/**
+ * Set up interactive feedback UI for demo
+ */
+function setupInteractiveFeedbackUI() {
+  const feedbackSection = document.createElement('section');
+  feedbackSection.className = 'feedback-section';
+  feedbackSection.innerHTML = `
+    <h2>Interactive Feedback</h2>
+    <div id="feedback-form" class="feedback-form">
+      <label for="feedback-input">Leave your feedback:</label>
+      <textarea id="feedback-input" rows="4" placeholder="Enter your feedback here..."></textarea>
+      <div class="button-group">
+        <button id="submit-feedback-btn" class="btn btn-primary">Submit Feedback</button>
+        <button id="clear-feedback-btn" class="btn btn-secondary">Clear</button>
+      </div>
+    </div>
+    <div id="feedback-list" class="feedback-list"></div>
+  `;
+  document.querySelector('.main').prepend(feedbackSection);
+
+  const feedbackInput = document.getElementById('feedback-input');
+  const submitFeedbackBtn = document.getElementById('submit-feedback-btn');
+  const clearFeedbackBtn = document.getElementById('clear-feedback-btn');
+  const feedbackList = document.getElementById('feedback-list');
+
+  // Load saved feedback from stateManager
+  const savedFeedback = stateManager.getState().feedback || [];
+  savedFeedback.forEach(f => addFeedbackItem(f));
+
+  submitFeedbackBtn.addEventListener('click', () => {
+    const text = feedbackInput.value.trim();
+    if (!text) {
+      notifications.warning('Feedback cannot be empty');
+      return;
+    }
+    // Save feedback to stateManager
+    const feedbackItem = {
+      id: crypto.randomUUID(),
+      text,
+      timestamp: Date.now()
+    };
+    stateManager.addFeedback(feedbackItem);
+    addFeedbackItem(feedbackItem);
+    feedbackInput.value = '';
+    notifications.success('Feedback submitted successfully');
+  });
+
+  clearFeedbackBtn.addEventListener('click', () => {
+    feedbackInput.value = '';
+  });
+
+  function addFeedbackItem(item) {
+    const div = document.createElement('div');
+    div.className = 'feedback-item';
+    div.innerHTML = `
+      <div class="feedback-text">${item.text}</div>
+      <div class="feedback-meta">
+        <span class="feedback-timestamp">${new Date(item.timestamp).toLocaleString()}</span>
+        <button class="btn btn-danger btn-delete-feedback" data-id="${item.id}">Delete</button>
+      </div>
+    `;
+    feedbackList.prepend(div);
+
+    // Attach delete event
+    div.querySelector('.btn-delete-feedback').addEventListener('click', () => {
+      stateManager.removeFeedback(item.id);
+      div.remove();
+      notifications.info('Feedback deleted');
+    });
+  }
+}
+
+// Initialize the app
+initApp().catch(err => {
+  console.error('Error initializing app:', err);
+  notifications.error('Failed to initialize app: ' + err.message);
+});
