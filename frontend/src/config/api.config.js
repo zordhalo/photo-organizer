@@ -7,12 +7,12 @@ export const API_CONFIG = {
   // Base URL for the backend API
   BASE_URL: import.meta.env.VITE_API_URL || 'http://localhost:8000',
   
-  // API Endpoints
+  // API Endpoints (backend uses /api/v1 prefix for most endpoints)
   ENDPOINTS: {
-    ANALYZE: '/analyze',
-    ANALYZE_BATCH: '/analyze-batch',
-    HEALTH: '/health',
-    STATS: '/stats'
+    ANALYZE: '/api/v1/analyze',
+    ANALYZE_BATCH: '/api/v1/analyze-batch',
+    HEALTH: '/health',  // Health endpoint is at root level
+    STATS: '/api/v1/stats'
   },
   
   // Request Configuration

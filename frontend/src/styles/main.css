@@ -3,6 +3,9 @@
  * Global styles and CSS variables
  */
 
+/* Import component styles */
+@import './components.css';
+
 :root {
   /* Color Palette */
   --color-primary: #2563eb;
@@ -221,6 +224,75 @@ section h2 {
   margin-top: var(--spacing-xl);
   border-top: 1px solid var(--bg-tertiary);
   color: var(--text-muted);
+}
+
+/* Buttons */
+.btn {
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius-md);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+  transition: var(--transition-fast);
+}
+
+.button-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-sm);
+  margin: var(--spacing-md) 0;
+}
+
+.btn-primary {
+  background-color: var(--color-primary);
+  color: white;
+}
+
+.btn-primary:hover {
+  background-color: var(--color-primary-dark);
+}
+
+.btn-secondary {
+  background-color: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--text-muted);
+}
+
+.btn-secondary:hover {
+  background-color: var(--bg-primary);
+}
+
+/* API Test Section */
+.api-test-section {
+  margin-top: var(--spacing-md);
+}
+
+.api-result {
+  margin-top: var(--spacing-md);
+  padding: var(--spacing-md);
+  background-color: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+  font-family: monospace;
+  font-size: 0.875rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  min-height: 60px;
+}
+
+.api-result.loading {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.api-result.success {
+  color: var(--color-success);
+  border-left: 3px solid var(--color-success);
+}
+
+.api-result.error {
+  color: var(--color-error);
+  border-left: 3px solid var(--color-error);
 }
 
 /* Responsive */
