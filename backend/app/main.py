@@ -167,6 +167,7 @@ origins.extend([
     "http://127.0.0.1:3000",
     "http://127.0.0.1:5173",
     "http://127.0.0.1:8080",
+    "null",  # For file:// protocol (local HTML files)
 ])
 # Remove duplicates while preserving order
 origins = list(dict.fromkeys(origins))

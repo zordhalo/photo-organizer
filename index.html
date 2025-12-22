@@ -995,7 +995,7 @@
                 }
             }
             
-            return 'Finishing'; // Default category
+            return 'Final Inspection'; // Default category
         }
 
         function render() {
@@ -1104,30 +1104,45 @@
         }
 
         // ========== LOCAL BACKEND INTEGRATION ==========
-        const API_BASE_URL = 'http://localhost:8000/api';
-        const WS_URL = 'ws://localhost:8000/ws/analysis';
+        const API_BASE_URL = 'http://localhost:8000/api/v1';
+        const HEALTH_URL = 'http://localhost:8000/health';
         
-        let ws = null;
         let analysisInProgress = false;
+        let serverConnected = false;
 
         // Check backend connection on load
         async function checkServerStatus() {
             try {
-                const response = await fetch(`${API_BASE_URL}/health`, { 
+                const response = await fetch(HEALTH_URL, { 
                     method: 'GET',
-                    mode: 'no-cors'
+                    headers: {
+                        'Accept': 'application/json'
+                    }
                 });
-                updateServerStatus(true);
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    serverConnected = true;
+                    updateServerStatus(true, data);
+                } else {
+                    serverConnected = false;
+                    updateServerStatus(false);
+                }
             } catch (error) {
+                console.error('Server connection error:', error);
+                serverConnected = false;
                 updateServerStatus(false);
-                setTimeout(checkServerStatus, 3000); // Retry every 3 seconds
             }
+            
+            // Retry every 5 seconds
+            setTimeout(checkServerStatus, 5000);
         }
 
-        function updateServerStatus(connected) {
+        function updateServerStatus(connected, data = null) {
             const statusEl = document.getElementById('serverStatus');
             if (connected) {
-                statusEl.textContent = '● Connected';
+                const gpuText = data?.cuda_available ? ' (GPU)' : ' (CPU)';
+                statusEl.textContent = '● Connected' + gpuText;
                 statusEl.style.color = '#218041';
                 document.getElementById('analyzeBtn').disabled = photos.length === 0;
             } else {
@@ -1137,121 +1152,194 @@
             }
         }
 
-        function updateGPUStatus(status) {
+        function updateGPUStatus(status, message = '') {
             const gpuEl = document.getElementById('gpuStatus');
             if (status === 'processing') {
-                gpuEl.textContent = '● Processing';
+                gpuEl.textContent = '● Processing' + (message ? ` (${message})` : '');
                 gpuEl.style.color = '#a84b2f';
             } else if (status === 'ready') {
                 gpuEl.textContent = '● Ready';
                 gpuEl.style.color = '#218041';
+            } else if (status === 'error') {
+                gpuEl.textContent = '● Error';
+                gpuEl.style.color = '#c01547';
             } else {
                 gpuEl.textContent = '● Idle';
                 gpuEl.style.color = '#2180a8';
             }
         }
 
-        // Connect to WebSocket for real-time analysis updates
-        function connectWebSocket() {
-            ws = new WebSocket(WS_URL);
-            
-            ws.onopen = () => {
-                console.log('WebSocket connected');
-                updateGPUStatus('ready');
+        // Base64 to Blob conversion helper
+        function base64ToBlob(base64, mimeType) {
+            // Remove data URL prefix if present
+            const base64Data = base64.includes(',') ? base64.split(',')[1] : base64;
+            const byteCharacters = atob(base64Data);
+            const byteNumbers = new Array(byteCharacters.length);
+            for (let i = 0; i < byteCharacters.length; i++) {
+                byteNumbers[i] = byteCharacters.charCodeAt(i);
+            }
+            const byteArray = new Uint8Array(byteNumbers);
+            return new Blob([byteArray], { type: mimeType });
+        }
+
+        // Get MIME type from data URL or filename
+        function getMimeType(dataUrl, filename) {
+            if (dataUrl.startsWith('data:')) {
+                const match = dataUrl.match(/data:([^;]+);/);
+                if (match) return match[1];
+            }
+            const ext = filename.toLowerCase().split('.').pop();
+            const mimeTypes = {
+                'jpg': 'image/jpeg',
+                'jpeg': 'image/jpeg',
+                'png': 'image/png',
+                'webp': 'image/webp',
+                'gif': 'image/gif'
             };
-            
-            ws.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-                
-                if (data.type === 'progress') {
-                    // Update progress bar
-                    const progress = (data.current / data.total) * 100;
-                    document.getElementById('progressFill').style.width = progress + '%';
-                    document.getElementById('progressCount').textContent = `${data.current}/${data.total}`;
-                    updateGPUStatus('processing');
-                }
-                
-                if (data.type === 'result') {
-                    // Update photo with AI analysis result
-                    const photoIndex = photos.findIndex(p => p.id === data.photo_id);
-                    if (photoIndex !== -1) {
-                        photos[photoIndex].category = data.category;
-                        photos[photoIndex].confidence = data.confidence;
-                        photos[photoIndex].aiDetected = true;
-                    }
-                    render();
-                }
-                
-                if (data.type === 'complete') {
-                    analysisInProgress = false;
-                    document.getElementById('analysisProgress').style.display = 'none';
-                    updateGPUStatus('ready');
-                    alert(`Analysis complete! ${data.success} photos successfully categorized.`);
-                }
-                
-                if (data.type === 'error') {
-                    console.error('Analysis error:', data.message);
-                    alert('Error during analysis: ' + data.message);
-                    updateGPUStatus('ready');
-                }
-            };
-            
-            ws.onerror = (error) => {
-                console.error('WebSocket error:', error);
-                updateGPUStatus('idle');
-            };
-            
-            ws.onclose = () => {
-                console.log('WebSocket disconnected');
-                updateGPUStatus('idle');
-                setTimeout(connectWebSocket, 5000); // Reconnect every 5 seconds
-            };
+            return mimeTypes[ext] || 'image/jpeg';
         }
 
         // Send photos to backend for AI analysis
         async function analyzePhotosWithAI() {
-            if (analysisInProgress || photos.length === 0) return;
+            if (analysisInProgress || photos.length === 0 || !serverConnected) return;
             
             analysisInProgress = true;
             updateGPUStatus('processing');
             document.getElementById('analysisProgress').style.display = 'block';
             document.getElementById('analyzeBtn').disabled = true;
+            document.getElementById('progressText').textContent = 'Analyzing photos...';
+            document.getElementById('progressFill').style.width = '0%';
+            document.getElementById('progressCount').textContent = `0/${photos.length}`;
+
+            const startTime = performance.now();
+            let completed = 0;
+            let successful = 0;
+            let errors = [];
 
             try {
-                // Prepare photo data for backend
-                const photoData = photos.map(p => ({
-                    id: p.id,
-                    name: p.name,
-                    data: p.src // Base64 encoded image
-                }));
-
-                // Send to backend for GPU analysis
-                const response = await fetch(`${API_BASE_URL}/analyze`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        photos: photoData,
-                        models: ['yolov8', 'clip']  // Models to use for analysis
-                    })
-                });
-
-                if (!response.ok) {
-                    throw new Error('Analysis request failed');
+                // Use batch endpoint for multiple photos
+                if (photos.length > 1) {
+                    // Create FormData with all images
+                    const formData = new FormData();
+                    
+                    for (const photo of photos) {
+                        const mimeType = getMimeType(photo.src, photo.name);
+                        const blob = base64ToBlob(photo.src, mimeType);
+                        formData.append('files', blob, photo.name);
+                    }
+                    
+                    updateGPUStatus('processing', 'batch');
+                    
+                    const response = await fetch(`${API_BASE_URL}/batch-analyze`, {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    if (!response.ok) {
+                        const errorData = await response.json().catch(() => ({}));
+                        throw new Error(errorData.detail || `HTTP ${response.status}`);
+                    }
+                    
+                    const result = await response.json();
+                    console.log('Batch analysis result:', result);
+                    
+                    // Update photos with results
+                    if (result.results) {
+                        result.results.forEach((res, index) => {
+                            if (res.success && res.analysis) {
+                                const photo = photos.find(p => p.name === res.filename);
+                                if (photo) {
+                                    // Map backend category to frontend category
+                                    photo.category = mapBackendCategory(res.analysis.construction_category);
+                                    photo.confidence = res.analysis.confidence;
+                                    photo.aiDetected = true;
+                                    photo.predictions = res.analysis.classifications;
+                                    successful++;
+                                }
+                            } else {
+                                errors.push({ filename: res.filename, error: res.error });
+                            }
+                            completed++;
+                            const progress = (completed / photos.length) * 100;
+                            document.getElementById('progressFill').style.width = progress + '%';
+                            document.getElementById('progressCount').textContent = `${completed}/${photos.length}`;
+                        });
+                    }
+                } else {
+                    // Single image analysis
+                    const photo = photos[0];
+                    const mimeType = getMimeType(photo.src, photo.name);
+                    const blob = base64ToBlob(photo.src, mimeType);
+                    
+                    const formData = new FormData();
+                    formData.append('file', blob, photo.name);
+                    
+                    updateGPUStatus('processing', 'single');
+                    
+                    const response = await fetch(`${API_BASE_URL}/analyze`, {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    if (!response.ok) {
+                        const errorData = await response.json().catch(() => ({}));
+                        throw new Error(errorData.detail || `HTTP ${response.status}`);
+                    }
+                    
+                    const result = await response.json();
+                    console.log('Single analysis result:', result);
+                    
+                    if (result.success && result.analysis) {
+                        photo.category = mapBackendCategory(result.analysis.construction_category);
+                        photo.confidence = result.analysis.confidence;
+                        photo.aiDetected = true;
+                        photo.predictions = result.analysis.classifications;
+                        successful++;
+                    }
+                    
+                    completed++;
+                    document.getElementById('progressFill').style.width = '100%';
+                    document.getElementById('progressCount').textContent = `1/1`;
                 }
-
-                const result = await response.json();
-                console.log('Analysis submitted:', result);
+                
+                const endTime = performance.now();
+                const totalTime = ((endTime - startTime) / 1000).toFixed(2);
+                
+                render();
+                
+                const errorMsg = errors.length > 0 
+                    ? `\n\nFailed: ${errors.map(e => `${e.filename}: ${e.error}`).join('\n')}` 
+                    : '';
+                
+                alert(`Analysis complete!\n\n✅ ${successful}/${photos.length} photos analyzed\n⏱️ Total time: ${totalTime}s${errorMsg}`);
 
             } catch (error) {
-                console.error('Error sending photos for analysis:', error);
-                alert('Failed to connect to analysis backend. Make sure the server is running.');
+                console.error('Error during analysis:', error);
+                updateGPUStatus('error');
+                alert(`Analysis failed: ${error.message}\n\nMake sure the backend server is running.`);
+            } finally {
                 analysisInProgress = false;
                 updateGPUStatus('ready');
                 document.getElementById('analysisProgress').style.display = 'none';
-                document.getElementById('analyzeBtn').disabled = false;
+                document.getElementById('analyzeBtn').disabled = photos.length === 0;
             }
+        }
+
+        // Map backend construction categories to frontend categories
+        function mapBackendCategory(backendCategory) {
+            const categoryMap = {
+                'Foundation & Excavation': 'Foundation & Basement',
+                'Framing & Structure': 'Framing',
+                'Roofing': 'Roofing',
+                'Electrical & Plumbing': 'Electrical',
+                'Interior Finishing': 'Drywall & Painting',
+                'Exterior & Landscaping': 'Landscaping & Hardscape',
+                'Safety & Equipment': 'Excavation & Site Work',
+                'Progress Documentation': 'Final Inspection',
+                'Uncategorized': 'Final Inspection'
+            };
+            
+            return categoryMap[backendCategory] || 'Final Inspection';
         }
 
         // Update button rendering
@@ -1261,7 +1349,38 @@
             
             // Update analyze button state
             const hasPhotos = photos.length > 0;
-            document.getElementById('analyzeBtn').disabled = !hasPhotos || analysisInProgress;
+            document.getElementById('analyzeBtn').disabled = !hasPhotos || analysisInProgress || !serverConnected;
+        }
+
+        // Fetch categories from backend
+        async function fetchCategories() {
+            try {
+                const response = await fetch(`${API_BASE_URL}/categories`);
+                if (response.ok) {
+                    const data = await response.json();
+                    console.log('Available categories:', data.categories);
+                }
+            } catch (error) {
+                console.log('Could not fetch categories from backend');
+            }
+        }
+
+        // Fetch stats from backend
+        async function fetchStats() {
+            try {
+                const response = await fetch(`${API_BASE_URL}/stats`);
+                if (response.ok) {
+                    const data = await response.json();
+                    console.log('API Stats:', data);
+                    
+                    // Update GPU status based on stats
+                    if (data.gpu?.available) {
+                        updateGPUStatus('ready');
+                    }
+                }
+            } catch (error) {
+                console.log('Could not fetch stats from backend');
+            }
         }
 
         // Attach event listeners
@@ -1269,7 +1388,8 @@
 
         // Initialize
         checkServerStatus();
-        connectWebSocket();
+        fetchCategories();
+        fetchStats();
         
         // Initial render
         render();
