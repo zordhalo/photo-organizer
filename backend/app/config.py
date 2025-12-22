@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     # Server Configuration
     HOST: str = "0.0.0.0"
     PORT: int = 8000
+    WORKERS: int = 1
+    DEBUG: bool = False
     
     # GPU Configuration
     CUDA_VISIBLE_DEVICES: str = "0"
@@ -25,14 +27,21 @@ class Settings(BaseSettings):
     
     # Model Configuration
     MODEL_NAME: str = "resnet50"
+    MODEL_WEIGHTS_PATH: str = ""
     BATCH_SIZE: int = 8
     
     # API Configuration
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
+    API_PREFIX: str = "/api/v1"
     
     # Upload Configuration
     MAX_FILE_SIZE: int = 10 * 1024 * 1024  # 10MB
+    MAX_BATCH_SIZE: int = 20  # Maximum images in batch
     ALLOWED_EXTENSIONS: set = {".jpg", ".jpeg", ".png", ".webp"}
+    
+    # Logging Configuration
+    LOG_LEVEL: str = "INFO"
+    LOG_FORMAT: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
 
 @lru_cache()
