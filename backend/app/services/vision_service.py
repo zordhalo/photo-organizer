@@ -299,15 +299,18 @@ class VisionService:
     
     Features:
     - Automatic GPU/CPU device selection
-    - CUDA memory management
-    - Single and batch inference
+    - CUDA memory management with automatic batch size adjustment
+    - FP16 (half-precision) inference for 2x speedup on GPU
+    - Single and batch inference with GPU optimization
     - EXIF orientation correction
     - Construction category mapping
+    - Model warm-up on startup
+    - GPU memory monitoring and cleanup
     
     Performance Targets:
-    - Single image inference: ~50ms on GPU
-    - Batch inference (10 images): ~11ms per image
-    - GPU memory usage: <2GB for ResNet50
+    - Single image inference: <50ms on GPU
+    - Batch inference (10 images): <11ms per image
+    - GPU memory usage: <4GB for typical workload
     - Throughput: 90+ images/second in batch mode
     """
     
@@ -324,6 +327,20 @@ class VisionService:
         self._cuda_memory_fraction: float = 0.8  # Use up to 80% of GPU memory
         self._enable_cudnn_benchmark: bool = True
         
+        # FP16 optimization settings
+        self._use_fp16: bool = True  # Enable FP16 inference by default on GPU
+        self._fp16_enabled: bool = False  # Actual FP16 state
+        
+        # Batch processing optimization
+        self._optimal_batch_size: int = settings.BATCH_SIZE
+        self._min_batch_size: int = 1
+        self._max_batch_size: int = 32
+        
+        # Performance tracking
+        self._total_inferences: int = 0
+        self._total_inference_time_ms: float = 0.0
+        self._warmup_complete: bool = False
+        
     def initialize(self) -> None:
         """
         Initialize the model and configure device.
@@ -332,8 +349,10 @@ class VisionService:
         - GPU detection and device allocation
         - CUDA memory management configuration
         - Model loading with appropriate weights
+        - FP16 conversion for GPU acceleration
         - Image transformation pipeline setup
         - ImageNet labels loading
+        - Model warm-up for consistent performance
         """
         if self._initialized:
             return
@@ -346,6 +365,9 @@ class VisionService:
         # Load model
         self._load_model()
         
+        # Apply FP16 optimization if on GPU
+        self._apply_fp16_optimization()
+        
         # Setup image preprocessing pipeline
         self._setup_transforms()
         
@@ -353,6 +375,10 @@ class VisionService:
         self._imagenet_labels = load_imagenet_labels()
         
         self._initialized = True
+        
+        # Perform model warm-up for consistent performance
+        self._warmup_model()
+        
         logger.info("✅ Vision Service initialized successfully")
         
     def _configure_device(self) -> None:
@@ -462,6 +488,147 @@ class VisionService:
         if self.device.type == "cuda":
             memory_allocated = torch.cuda.memory_allocated(self.device) / 1e9
             logger.info(f"📊 GPU memory after model load: {memory_allocated:.2f} GB")
+    
+    def _apply_fp16_optimization(self) -> None:
+        """
+        Apply FP16 (half-precision) optimization for faster GPU inference.
+        
+        FP16 provides:
+        - ~2x speedup on modern GPUs with Tensor Cores
+        - ~50% memory reduction
+        - Minimal accuracy impact for inference
+        
+        Note: Only applies on CUDA devices with compute capability >= 7.0
+        """
+        if not self._use_fp16 or self.device.type != "cuda":
+            logger.info("ℹ️  FP16 optimization disabled (CPU or disabled in settings)")
+            self._fp16_enabled = False
+            return
+        
+        try:
+            # Check GPU compute capability
+            props = torch.cuda.get_device_properties(self.device)
+            compute_capability = props.major + props.minor / 10
+            
+            if compute_capability < 7.0:
+                logger.warning(
+                    f"⚠️  FP16 not recommended for compute capability {compute_capability:.1f} "
+                    "(< 7.0). Staying with FP32."
+                )
+                self._fp16_enabled = False
+                return
+            
+            # Convert model to half precision
+            self.model = self.model.half()
+            self._fp16_enabled = True
+            
+            memory_after_fp16 = torch.cuda.memory_allocated(self.device) / 1e9
+            logger.info(
+                f"⚡ FP16 optimization enabled (GPU compute capability: {compute_capability:.1f})"
+            )
+            logger.info(f"📊 GPU memory after FP16 conversion: {memory_after_fp16:.2f} GB")
+            
+        except Exception as e:
+            logger.warning(f"Failed to apply FP16 optimization: {e}. Using FP32.")
+            self._fp16_enabled = False
+    
+    def _warmup_model(self) -> None:
+        """
+        Perform model warm-up with dummy inference.
+        
+        Warm-up is important for:
+        - JIT compilation of CUDA kernels
+        - Memory allocation optimization
+        - Consistent first-request latency
+        """
+        if self._warmup_complete:
+            return
+        
+        logger.info("🔥 Performing model warm-up...")
+        
+        try:
+            # Create dummy input
+            dummy_input = torch.randn(1, 3, 224, 224, device=self.device)
+            
+            # Apply FP16 if enabled
+            if self._fp16_enabled:
+                dummy_input = dummy_input.half()
+            
+            # Run a few warm-up inferences
+            with torch.no_grad():
+                for _ in range(3):
+                    _ = self.model(dummy_input)
+            
+            # Synchronize GPU
+            if self.device.type == "cuda":
+                torch.cuda.synchronize()
+            
+            self._warmup_complete = True
+            logger.info("🔥 Model warm-up complete")
+            
+        except Exception as e:
+            logger.warning(f"Model warm-up failed: {e}")
+    
+    def get_gpu_memory_stats(self) -> Dict[str, float]:
+        """
+        Get current GPU memory statistics.
+        
+        Returns:
+            Dictionary with memory stats in MB
+        """
+        if self.device.type != "cuda":
+            return {
+                "allocated_mb": 0.0,
+                "reserved_mb": 0.0,
+                "total_mb": 0.0,
+                "free_mb": 0.0,
+                "utilization_percent": 0.0,
+            }
+        
+        allocated = torch.cuda.memory_allocated(self.device) / 1e6
+        reserved = torch.cuda.memory_reserved(self.device) / 1e6
+        total = torch.cuda.get_device_properties(self.device).total_memory / 1e6
+        free = total - allocated
+        
+        return {
+            "allocated_mb": round(allocated, 2),
+            "reserved_mb": round(reserved, 2),
+            "total_mb": round(total, 2),
+            "free_mb": round(free, 2),
+            "utilization_percent": round((allocated / total) * 100, 2) if total > 0 else 0.0,
+        }
+    
+    def get_optimal_batch_size(self, image_count: int) -> int:
+        """
+        Calculate optimal batch size based on available GPU memory.
+        
+        Args:
+            image_count: Number of images to process
+            
+        Returns:
+            Optimal batch size for processing
+        """
+        if self.device.type != "cuda":
+            # On CPU, use smaller batches to avoid memory issues
+            return min(image_count, 4)
+        
+        # Get current memory stats
+        stats = self.get_gpu_memory_stats()
+        free_memory_mb = stats["free_mb"]
+        
+        # Estimate memory per image (rough: ~100MB for ResNet50 batch processing)
+        memory_per_image_mb = 100.0
+        
+        # Calculate max batch size based on available memory (leave 20% headroom)
+        max_from_memory = int((free_memory_mb * 0.8) / memory_per_image_mb)
+        
+        # Clamp to configured limits
+        optimal = max(
+            self._min_batch_size,
+            min(max_from_memory, self._max_batch_size, image_count)
+        )
+        
+        return optimal
             
     def _setup_transforms(self) -> None:
         """
@@ -492,7 +659,7 @@ class VisionService:
             image: PIL Image in any mode
             
         Returns:
-            Preprocessed tensor ready for model input
+            Preprocessed tensor ready for model input (FP16 if enabled)
         """
         # Fix EXIF orientation
         image = fix_exif_orientation(image)
@@ -502,7 +669,13 @@ class VisionService:
             image = image.convert("RGB")
         
         # Apply transforms
-        return self.transform(image)
+        tensor = self.transform(image)
+        
+        # Convert to FP16 if enabled
+        if self._fp16_enabled:
+            tensor = tensor.half()
+        
+        return tensor
         
     def _get_imagenet_label(self, class_idx: int) -> str:
         """
@@ -581,6 +754,8 @@ class VisionService:
         # Initialize if needed
         if not self._initialized:
             self.initialize()
+        
+        start_time = time.time()
             
         # Validate image
         is_valid, error = validate_image(image)
@@ -592,7 +767,12 @@ class VisionService:
         
         # Run inference
         output = self.model(input_tensor)
-        probabilities = F.softmax(output[0], dim=0)
+        probabilities = F.softmax(output[0].float(), dim=0)  # Convert back to float for softmax
+        
+        # Track performance
+        inference_time = (time.time() - start_time) * 1000
+        self._total_inferences += 1
+        self._total_inference_time_ms += inference_time
         
         # Get top predictions
         confidences, indices = self._calculate_confidence_scores(probabilities)
@@ -675,9 +855,16 @@ class VisionService:
         # Stack into batch tensor and move to device
         batch_tensor = torch.stack(tensors).to(self.device)
         
+        start_time = time.time()
+        
         # Run batch inference
         outputs = self.model(batch_tensor)
-        probabilities = F.softmax(outputs, dim=1)
+        probabilities = F.softmax(outputs.float(), dim=1)  # Convert back to float for softmax
+        
+        # Track performance
+        batch_inference_time = (time.time() - start_time) * 1000
+        self._total_inferences += len(valid_indices)
+        self._total_inference_time_ms += batch_inference_time
         
         # Process each result
         for batch_idx, original_idx in enumerate(valid_indices):
@@ -902,20 +1089,22 @@ class VisionService:
             "device": str(self.device),
             "cuda_available": torch.cuda.is_available(),
             "initialized": self._initialized,
+            "fp16_enabled": self._fp16_enabled,
+            "warmup_complete": self._warmup_complete,
+            "total_inferences": self._total_inferences,
+            "avg_inference_time_ms": round(
+                self._total_inference_time_ms / self._total_inferences, 2
+            ) if self._total_inferences > 0 else 0.0,
         }
         
         if self.device.type == "cuda":
+            gpu_stats = self.get_gpu_memory_stats()
             info.update({
                 "gpu_name": torch.cuda.get_device_name(self.device),
-                "gpu_memory_allocated_mb": round(
-                    torch.cuda.memory_allocated(self.device) / 1e6, 2
-                ),
-                "gpu_memory_reserved_mb": round(
-                    torch.cuda.memory_reserved(self.device) / 1e6, 2
-                ),
-                "gpu_memory_total_mb": round(
-                    torch.cuda.get_device_properties(self.device).total_memory / 1e6, 2
-                ),
+                "gpu_memory_allocated_mb": gpu_stats["allocated_mb"],
+                "gpu_memory_reserved_mb": gpu_stats["reserved_mb"],
+                "gpu_memory_total_mb": gpu_stats["total_mb"],
+                "gpu_utilization_percent": gpu_stats["utilization_percent"],
             })
         
         if self.model is not None:
@@ -925,11 +1114,56 @@ class VisionService:
             
         return info
         
-    def clear_cuda_cache(self) -> None:
-        """Clear CUDA memory cache to free up GPU memory."""
+    def clear_cuda_cache(self) -> Dict[str, float]:
+        """
+        Clear CUDA memory cache to free up GPU memory.
+        
+        Returns:
+            Dictionary with memory stats before and after clearing
+        """
+        if self.device.type != "cuda":
+            return {"message": "Not using CUDA", "memory_freed_mb": 0.0}
+        
+        # Get memory before clearing
+        memory_before = torch.cuda.memory_allocated(self.device) / 1e6
+        
+        # Clear cache
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        
+        # Get memory after clearing
+        memory_after = torch.cuda.memory_allocated(self.device) / 1e6
+        memory_freed = memory_before - memory_after
+        
+        logger.info(f"CUDA cache cleared: freed {memory_freed:.2f} MB")
+        
+        return {
+            "memory_before_mb": round(memory_before, 2),
+            "memory_after_mb": round(memory_after, 2),
+            "memory_freed_mb": round(memory_freed, 2),
+        }
+    
+    def optimize_for_inference(self) -> None:
+        """
+        Apply additional inference optimizations.
+        
+        This should be called after initialization for production use.
+        """
+        if not self._initialized:
+            self.initialize()
+        
+        # Ensure model is in eval mode
+        self.model.eval()
+        
+        # Disable gradient computation globally for this model
+        for param in self.model.parameters():
+            param.requires_grad = False
+        
+        # Clear any cached gradients
         if self.device.type == "cuda":
             torch.cuda.empty_cache()
-            logger.info("CUDA cache cleared")
+        
+        logger.info("Model optimized for inference")
             
     def get_construction_categories(self) -> List[str]:
         """Get list of all construction categories."""

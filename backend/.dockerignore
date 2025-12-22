@@ -1,0 +1,122 @@
+# ============================================
+# Docker Build Context Ignore File
+# Excludes unnecessary files to speed up builds
+# ============================================
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python artifacts
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+.venv/
+.env/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# Testing and coverage
+.pytest_cache/
+.coverage
+.coveragerc
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# Documentation
+docs/
+*.md
+!README.md
+LICENSE
+CHANGELOG*
+
+# Docker files (not needed in context)
+docker-compose*.yml
+Dockerfile*
+!Dockerfile
+.docker/
+
+# Local configuration
+*.local
+.env
+.env.*
+!.env.example
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+*.tmp
+*.temp
+
+# Jupyter notebooks
+*.ipynb
+.ipynb_checkpoints/
+
+# Cache directories
+.cache/
+*.cache
+
+# Uploads and user data (should be mounted as volumes)
+uploads/
+data/
+!app/data/
+
+# Test files (optional - uncomment for smaller production images)
+# tests/
+# *_test.py
+# test_*.py
+
+# Scripts (not needed in container)
+scripts/
+*.sh
+!docker-entrypoint.sh
+
+# Miscellaneous
+*.bak
+*.orig
+*.rej
+.editorconfig
+.pre-commit-config.yaml
+Makefile
+requirements-dev.txt

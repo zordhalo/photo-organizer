@@ -1,0 +1,77 @@
+# Coverage.py configuration for Construction Photo Analyzer
+
+[run]
+# Source directories to measure
+source = app
+
+# Files to omit from coverage
+omit = 
+    */__pycache__/*
+    */tests/*
+    */.venv/*
+    */venv/*
+    */migrations/*
+
+# Branch coverage
+branch = True
+
+# Parallel execution support
+parallel = True
+
+# Data file location
+data_file = .coverage
+
+[report]
+# Minimum coverage percentage (79% achieved, remaining is GPU/lifecycle code)
+fail_under = 75
+
+# Exclude lines from coverage
+exclude_lines =
+    # Skip defensive code
+    pragma: no cover
+    
+    # Don't complain about missing debug code
+    def __repr__
+    def __str__
+    
+    # Don't complain if tests don't hit defensive assertions
+    raise AssertionError
+    raise NotImplementedError
+    
+    # Don't complain about abstract methods
+    @abstractmethod
+    
+    # Don't complain about type checking blocks
+    if TYPE_CHECKING:
+    if typing.TYPE_CHECKING:
+    
+    # Don't complain about impossible conditions
+    if __name__ == .__main__.:
+    
+    # Skip logging setup
+    logging.basicConfig
+    logger = logging.getLogger
+
+# Files to ignore in report
+ignore_errors = True
+
+# Show missing lines
+show_missing = True
+
+# Output precision
+precision = 2
+
+[html]
+# HTML report output directory
+directory = htmlcov
+
+# Title for HTML report
+title = Construction Photo Analyzer - Coverage Report
+
+[xml]
+# XML report output file
+output = coverage.xml
+
+[json]
+# JSON report output file
+output = coverage.json

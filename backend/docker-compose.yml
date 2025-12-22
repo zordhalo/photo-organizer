@@ -1,0 +1,86 @@
+# ============================================
+# Photo Organizer - Docker Compose (Development)
+# GPU-enabled development environment
+# ============================================
+# Usage:
+#   docker-compose up --build      # Build and start
+#   docker-compose up -d           # Start in background
+#   docker-compose logs -f backend # View logs
+#   docker-compose down            # Stop and remove
+# ============================================
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development  # Use development stage with hot reload
+    container_name: photo-organizer-dev
+    
+    # Port mapping
+    ports:
+      - "8000:8000"
+    
+    # Environment variables
+    environment:
+      - USE_GPU=true
+      - CUDA_VISIBLE_DEVICES=0
+      - LOG_LEVEL=debug
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONUNBUFFERED=1
+      # Model settings
+      - MODEL_NAME=resnet152
+      - CONFIDENCE_THRESHOLD=0.1
+      - TOP_K_PREDICTIONS=5
+    
+    # Volume mounts for development
+    volumes:
+      # Mount source code for hot reload
+      - ./app:/app/app:ro
+      # Mount test files
+      - ./tests:/app/tests:ro
+      # Persistent cache for models
+      - model-cache:/root/.cache/torch
+      # Logs directory
+      - ./logs:/app/logs
+    
+    # GPU configuration - NVIDIA Container Toolkit required
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    
+    # Restart policy
+    restart: unless-stopped
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    # Network
+    networks:
+      - photo-organizer-network
+
+# Named volumes for persistent data
+volumes:
+  model-cache:
+    driver: local
+
+# Networks
+networks:
+  photo-organizer-network:
+    driver: bridge
