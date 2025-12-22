@@ -8,6 +8,55 @@ import { API_CONFIG } from '../config/api.config';
 import { connectionManager } from './connectionManager';
 
 class AnalysisService {
+    /**
+     * Analyze a single photo with graceful degradation and retry/fallback logic
+     * @param {Object} photo - Photo object with base64 and filename
+     * @returns {Promise<Object>} Analysis result
+     */
+    async analyzeWithGracefulDegradation(photo) {
+      // Import dependencies here to avoid circular imports
+      const { errorHandler } = await import('../utils/errorHandler');
+      const { fallbackService } = await import('./fallbackService');
+      const { connectionManager } = await import('./connectionManager');
+      const { apiClient } = await import('./apiClient');
+
+      let attempts = 0;
+      let lastError = null;
+      while (attempts < 3) {
+        try {
+          if (connectionManager.isConnected && !fallbackService.isEnabled()) {
+            const result = await apiClient.analyzeSingle(photo.base64, photo.filename);
+            return {
+              ...result,
+              filename: photo.filename,
+              method: 'ai_analysis'
+            };
+          }
+          break; // If not connected, skip retry
+        } catch (error) {
+          lastError = error;
+          const recovery = errorHandler.handle(error, 'Photo Analysis');
+          if (recovery === 'retry') {
+            attempts++;
+            continue;
+          } else if (recovery === 'wait') {
+            // Wait 2 seconds before retrying
+            await new Promise(res => setTimeout(res, 2000));
+            attempts++;
+            continue;
+          } else {
+            break;
+          }
+        }
+      }
+      // Fallback to keyword detection
+      fallbackService.enable();
+      const fallbackResult = fallbackService.detectCategoryFallback(photo.filename);
+      return {
+        ...fallbackResult,
+        filename: photo.filename
+      };
+    }
   constructor() {
     this.queue = [];
     this.processing = false;
