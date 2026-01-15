@@ -3,16 +3,21 @@ Application Configuration
 """
 
 import os
+from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
+
+# Get the backend directory (where .env file should be)
+BACKEND_DIR = Path(__file__).resolve().parent.parent
 
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
     
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=BACKEND_DIR / ".env",
         env_file_encoding="utf-8",
+        extra="ignore",
     )
     
     # Server Configuration
@@ -42,12 +47,17 @@ class Settings(BaseSettings):
     # Logging Configuration
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    
+    # GitHub Integration (for feedback -> issues)
+    GITHUB_TOKEN: str = ""
+    GITHUB_REPO_OWNER: str = ""
+    GITHUB_REPO_NAME: str = ""
 
 
-@lru_cache()
 def get_settings() -> Settings:
-    """Get cached settings instance."""
+    """Get settings instance (reloads .env on each call during development)."""
     return Settings()
 
 
+# Create settings instance - will reload when module is reimported
 settings = get_settings()

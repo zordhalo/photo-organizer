@@ -336,6 +336,66 @@
 }
 
 /* =====================
+   Feedback Result Styles
+   ===================== */
+.feedback-result {
+  margin-top: var(--spacing-md, 1rem);
+  padding: var(--spacing-md, 1rem);
+  border-radius: var(--radius-md, 8px);
+  font-size: 0.9rem;
+}
+
+.feedback-success {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-success, #4ade80);
+  background: rgba(74, 222, 128, 0.1);
+  padding: var(--spacing-sm, 0.5rem) var(--spacing-md, 1rem);
+  border-radius: var(--radius-md, 8px);
+  border: 1px solid rgba(74, 222, 128, 0.3);
+}
+
+.feedback-success .success-icon {
+  font-size: 1.25rem;
+  font-weight: bold;
+}
+
+.feedback-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-error, #ef4444);
+  background: rgba(239, 68, 68, 0.1);
+  padding: var(--spacing-sm, 0.5rem) var(--spacing-md, 1rem);
+  border-radius: var(--radius-md, 8px);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.feedback-error .error-icon {
+  font-size: 1.25rem;
+  font-weight: bold;
+}
+
+.github-link,
+.feedback-github-link {
+  color: var(--color-primary, #3b82f6);
+  text-decoration: underline;
+  font-weight: 500;
+  transition: color var(--transition-fast, 150ms ease);
+}
+
+.github-link:hover,
+.feedback-github-link:hover {
+  color: var(--color-primary-light, #60a5fa);
+}
+
+.feedback-github-link {
+  margin-left: auto;
+  font-size: 0.8rem;
+}
+
+/* =====================
    Responsive Adjustments
    ===================== */
 @media (max-width: 640px) {

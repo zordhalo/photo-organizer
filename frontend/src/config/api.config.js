@@ -10,9 +10,10 @@ export const API_CONFIG = {
   // API Endpoints (backend uses /api/v1 prefix for most endpoints)
   ENDPOINTS: {
     ANALYZE: '/api/v1/analyze',
-    ANALYZE_BATCH: '/api/v1/analyze-batch',
+    ANALYZE_BATCH: '/api/v1/batch-analyze',  // Note: backend uses batch-analyze not analyze-batch
     HEALTH: '/health',  // Health endpoint is at root level
-    STATS: '/api/v1/stats'
+    STATS: '/api/v1/stats',
+    FEEDBACK: '/api/v1/feedback'  // Submit feedback -> GitHub issue
   },
   
   // Request Configuration

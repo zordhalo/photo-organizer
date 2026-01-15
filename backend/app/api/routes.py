@@ -38,6 +38,8 @@ from app.models.schemas import (
     ErrorResponse,
     CATEGORY_DESCRIPTIONS,
     ConstructionCategoryEnum,
+    FeedbackRequest,
+    FeedbackResponse,
 )
 from app.services.vision_service import vision_service
 from app.api.dependencies import (
@@ -575,3 +577,118 @@ async def clear_gpu_cache():
             "success": False,
             "error": str(e),
         }
+
+
+# ============================================================================
+# Feedback Endpoint - Creates GitHub Issues
+# ============================================================================
+
+@router.post(
+    "/feedback",
+    response_model=FeedbackResponse,
+    responses={
+        200: {"description": "Feedback submitted successfully"},
+        500: {"description": "GitHub API error or configuration issue", "model": ErrorResponse},
+    },
+    summary="Submit user feedback",
+    description="""
+Submit user feedback which creates a GitHub issue in the project repository.
+
+Requires GitHub integration to be configured via environment variables:
+- GITHUB_TOKEN: Personal access token with 'repo' scope
+- GITHUB_REPO_OWNER: GitHub username or organization
+- GITHUB_REPO_NAME: Repository name
+    """,
+)
+async def submit_feedback(request: FeedbackRequest):
+    """
+    Submit user feedback and create a GitHub issue.
+    
+    The feedback is posted to the configured GitHub repository as a new issue
+    with the 'feedback' and 'user-submitted' labels.
+    """
+    import httpx
+    
+    # Check if GitHub integration is configured
+    if not settings.GITHUB_TOKEN:
+        raise HTTPException(
+            status_code=500,
+            detail="GitHub integration not configured. Please set GITHUB_TOKEN environment variable."
+        )
+    
+    if not settings.GITHUB_REPO_OWNER or not settings.GITHUB_REPO_NAME:
+        raise HTTPException(
+            status_code=500,
+            detail="GitHub repository not configured. Please set GITHUB_REPO_OWNER and GITHUB_REPO_NAME."
+        )
+    
+    # Build issue body
+    issue_body = f"""## User Feedback
+
+{request.feedback}
+
+---
+**Submitted via:** Construction Photo Analyzer v0.1.0
+**Timestamp:** {datetime.now(timezone.utc).isoformat()}
+"""
+    
+    if request.system_status:
+        issue_body += f"""
+**System Status at submission:**
+- API Server: {request.system_status.api_status or 'Unknown'}
+- Backend: {request.system_status.backend_info or 'Unknown'}
+"""
+
+    # Create issue title (truncate feedback for title)
+    feedback_preview = request.feedback[:50].replace('\n', ' ')
+    if len(request.feedback) > 50:
+        feedback_preview += "..."
+    issue_title = f"[Feedback] {feedback_preview}"
+
+    # Create GitHub issue
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"https://api.github.com/repos/{settings.GITHUB_REPO_OWNER}/{settings.GITHUB_REPO_NAME}/issues",
+                headers={
+                    "Authorization": f"Bearer {settings.GITHUB_TOKEN}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28"
+                },
+                json={
+                    "title": issue_title,
+                    "body": issue_body,
+                    "labels": ["feedback", "user-submitted"]
+                },
+                timeout=30.0
+            )
+        
+        if response.status_code == 201:
+            issue_data = response.json()
+            logger.info(f"✅ Feedback submitted - GitHub issue #{issue_data['number']} created")
+            return FeedbackResponse(
+                success=True,
+                issue_url=issue_data["html_url"],
+                issue_number=issue_data["number"],
+                message="Feedback submitted successfully"
+            )
+        else:
+            error_detail = response.text
+            logger.error(f"❌ GitHub API error: {response.status_code} - {error_detail}")
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=f"GitHub API error: {error_detail}"
+            )
+            
+    except httpx.TimeoutException:
+        logger.error("❌ GitHub API timeout")
+        raise HTTPException(
+            status_code=504,
+            detail="GitHub API request timed out. Please try again."
+        )
+    except httpx.RequestError as e:
+        logger.error(f"❌ GitHub API request error: {str(e)}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to connect to GitHub API: {str(e)}"
+        )

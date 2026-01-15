@@ -100,19 +100,118 @@ function setupUploadUI() {
     dropZone.classList.remove('drag-over');
     dropZoneTitle.textContent = 'Drag & drop files or folders here';
   });
-  dropZone.addEventListener('drop', (event) => {
+  dropZone.addEventListener('drop', async (event) => {
     event.preventDefault();
     dropZone.classList.remove('drag-over');
-    dropZoneTitle.textContent = 'Drag & drop files or folders here';
-    handleFiles(event.dataTransfer.files);
+    dropZoneTitle.textContent = 'Processing files...';
+    
+    const files = [];
+    const items = event.dataTransfer.items;
+    
+    if (items && items.length > 0) {
+      // Process items (supports both files and folders)
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.kind === 'file') {
+          const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
+          if (entry) {
+            if (entry.isDirectory) {
+              // Recursively process directory
+              const dirFiles = await processDirectoryEntry(entry);
+              files.push(...dirFiles);
+            } else if (entry.isFile) {
+              // Process single file
+              const file = await new Promise((resolve) => {
+                entry.file(resolve);
+              });
+              files.push(file);
+            }
+          } else {
+            // Fallback: try to get as file directly
+            const file = item.getAsFile();
+            if (file) files.push(file);
+          }
+        }
+      }
+    } else {
+      // Fallback to files if items not available
+      files.push(...Array.from(event.dataTransfer.files));
+    }
+    
+    if (files.length > 0) {
+      handleFiles(files);
+      dropZoneTitle.textContent = 'Drag & drop files or folders here';
+    } else {
+      dropZoneTitle.textContent = 'Drag & drop files or folders here';
+      notifications.warning('No files found in dropped items');
+    }
   });
 
   // Initial render
   renderUploadQueue(uploadQueueContainer);
 }
 
-function handleFiles(fileList) {
-  for (const file of fileList) {
+/**
+ * Recursively process a directory entry and collect all image files
+ * @param {FileSystemDirectoryEntry} directoryEntry - The directory entry to process
+ * @returns {Promise<File[]>} Array of image files found in the directory
+ */
+async function processDirectoryEntry(directoryEntry) {
+  const files = [];
+  const reader = directoryEntry.createReader();
+  
+  return new Promise((resolve) => {
+    const readEntries = () => {
+      reader.readEntries(async (entries) => {
+        if (entries.length === 0) {
+          resolve(files);
+          return;
+        }
+        
+        const promises = [];
+        for (const entry of entries) {
+          if (entry.isDirectory) {
+            // Recursively process subdirectories
+            promises.push(
+              processDirectoryEntry(entry).then(subFiles => {
+                files.push(...subFiles);
+              })
+            );
+          } else if (entry.isFile) {
+            // Process file
+            promises.push(
+              new Promise((fileResolve) => {
+                entry.file((file) => {
+                  // Only include image files
+                  if (file.type.startsWith('image/')) {
+                    files.push(file);
+                  }
+                  fileResolve();
+                });
+              })
+            );
+          }
+        }
+        
+        // Wait for all entries to be processed
+        await Promise.all(promises);
+        
+        // Continue reading if there are more entries
+        readEntries();
+      });
+    };
+    
+    readEntries();
+  });
+}
+
+async function handleFiles(fileList) {
+  // Handle both FileList and array of Files
+  const files = Array.isArray(fileList) ? fileList : Array.from(fileList);
+  const validFiles = [];
+  
+  // First pass: validate files and collect valid ones
+  for (const file of files) {
     if (!file.type.startsWith('image/')) {
       errorStates[file.name] = 'Invalid file type';
       continue;
@@ -121,13 +220,74 @@ function handleFiles(fileList) {
       errorStates[file.name] = 'File too large';
       continue;
     }
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      queuedFiles.push({ file, previewUrl: e.target.result, size: file.size, type: file.type });
-      renderUploadQueue(document.getElementById('upload-queue-container'));
-    };
-    reader.readAsDataURL(file);
+    validFiles.push(file);
   }
+  
+  const container = document.getElementById('upload-queue-container');
+  const total = validFiles.length;
+  let loaded = 0;
+  
+  // Show loading progress bar
+  if (total > 0 && container) {
+    container.innerHTML = `
+      <div class="queue-loading-progress">
+        <div class="loading-header">
+          <span class="loading-label">Loading files...</span>
+          <span class="loading-count">0 / ${total}</span>
+        </div>
+        <div class="loading-bar-wrapper">
+          <div class="loading-bar-fill" style="width: 0%"></div>
+        </div>
+      </div>
+    `;
+  }
+  
+  // Helper to update progress bar
+  const updateLoadingProgress = () => {
+    if (!container) return;
+    const percentage = Math.round((loaded / total) * 100);
+    const countEl = container.querySelector('.loading-count');
+    const fillEl = container.querySelector('.loading-bar-fill');
+    if (countEl) countEl.textContent = `${loaded} / ${total}`;
+    if (fillEl) fillEl.style.width = `${percentage}%`;
+  };
+  
+  // Read all files in parallel with progress tracking
+  const readPromises = validFiles.map(file => {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        loaded++;
+        updateLoadingProgress();
+        resolve({ 
+          file,
+          filename: file.name,
+          previewUrl: e.target.result, 
+          size: file.size, 
+          type: file.type 
+        });
+      };
+      reader.onerror = () => {
+        loaded++;
+        updateLoadingProgress();
+        errorStates[file.name] = 'Failed to read file';
+        resolve(null);
+      };
+      reader.readAsDataURL(file);
+    });
+  });
+  
+  // Wait for all files to be read
+  const results = await Promise.all(readPromises);
+  
+  // Add all valid results to queue at once
+  for (const result of results) {
+    if (result) {
+      queuedFiles.push(result);
+    }
+  }
+  
+  // Render once with all files
   renderUploadQueue(document.getElementById('upload-queue-container'));
 }
 
@@ -171,21 +331,53 @@ function setupPauseResumeUI() {
   });
 }
 
+/**
+ * Render upload queue with processing progress indicator
+ * @param {number} processingIndex - Current index being processed
+ */
+function renderUploadQueueWithProgress(processingIndex) {
+  const container = document.getElementById('upload-queue-container');
+  if (!container) return;
+  container.innerHTML = '';
+  uploadQueue = UploadQueue({
+    files: queuedFiles,
+    onRemove: null, // Disable during processing
+    onReorder: null, // Disable during processing
+    onStartAnalysis: null, // Disable during processing
+    errorStates,
+    processingIndex
+  });
+  container.appendChild(uploadQueue);
+}
+
 // In startBatchAnalysis, check for pause
 async function startBatchAnalysis() {
   // Send files to backend with sessionId
   try {
     const total = queuedFiles.length;
     const startedAt = Date.now();
+    const batchResults = []; // Collect all results
+    
     if (progressTracker) {
       progressTracker.show();
     }
+    
     for (let i = 0; i < total; i++) {
+      // Update queue UI to show current processing state
+      renderUploadQueueWithProgress(i);
+      
       while (analysisPaused) {
         await new Promise(res => setTimeout(res, 500));
       }
-      const result = await apiClient.analyze(queuedFiles[i].file, sessionId);
-      handleAnalysisResults([result]);
+      const queuedFile = queuedFiles[i];
+      const result = await apiClient.analyze(queuedFile.file, sessionId);
+      
+      // Add previewUrl to result for thumbnail display
+      result.previewUrl = queuedFile.previewUrl;
+      result.filename = result.filename || queuedFile.filename || queuedFile.file.name;
+      
+      // Collect result instead of displaying immediately
+      batchResults.push(result);
 
       const current = i + 1;
       const percentage = total ? Math.round((current / total) * 100) : 0;
@@ -196,25 +388,51 @@ async function startBatchAnalysis() {
         progressTracker.update({ current, total, percentage, speed, eta });
       }
     }
+    
+    // Show final completed state briefly
+    renderUploadQueueWithProgress(total);
+    
+    // Display all results at once after completion
+    handleAnalysisResults(batchResults);
+    
     notifications.success('Batch upload and analysis complete');
     queuedFiles = [];
     errorStates = {};
     renderUploadQueue(document.getElementById('upload-queue-container'));
   } catch (err) {
     notifications.error('Upload failed: ' + err.message);
-    // Keep files in queue
+    // Reset queue to normal state on error
+    renderUploadQueue(document.getElementById('upload-queue-container'));
   }
 }
 
 // Update stateManager when new analysis results arrive
 function handleAnalysisResults(results) {
   results.forEach(result => {
+    // Extract category and confidence from backend response structure
+    // Backend returns: { success, filename, analysis: { classifications, metadata: { construction_category } } }
+    let category = 'unknown';
+    let confidence = 0;
+    
+    if (result.analysis) {
+      // Get category from metadata
+      category = result.analysis.metadata?.construction_category || 'unknown';
+      // Get top confidence from classifications
+      if (result.analysis.classifications && result.analysis.classifications.length > 0) {
+        confidence = result.analysis.classifications[0].confidence || 0;
+      }
+    } else if (result.category) {
+      // Fallback format (from keyword fallback)
+      category = result.category;
+      confidence = result.confidence || 0;
+    }
+    
     stateManager.addPhoto({
       id: crypto.randomUUID(),
       filename: result.filename,
-      thumbnail: result.thumbnail || result.base64 || '',
-      category: result.category || 'unknown',
-      confidence: result.confidence || 0,
+      thumbnail: result.thumbnail || result.base64 || result.previewUrl || '',
+      category: category,
+      confidence: confidence,
       analyzedAt: Date.now(),
       sessionId,
       error: result.error || null
@@ -236,10 +454,22 @@ function setupRetryFailedUI() {
     notifications.info(`Retrying ${failedPhotos.length} failed files...`);
     for (const photo of failedPhotos) {
       try {
+        // Use thumbnail (data URL) - apiClient.analyzeSingle now handles conversion
         const result = await apiClient.analyzeSingle(photo.thumbnail, photo.filename);
+        
+        // Extract category and confidence from response
+        let category = 'unknown';
+        let confidence = 0;
+        if (result.analysis) {
+          category = result.analysis.metadata?.construction_category || 'unknown';
+          if (result.analysis.classifications?.length > 0) {
+            confidence = result.analysis.classifications[0].confidence || 0;
+          }
+        }
+        
         stateManager.updatePhoto(photo.id, {
-          category: result.category || 'unknown',
-          confidence: result.confidence || 0,
+          category: category,
+          confidence: confidence,
           error: null
         });
       } catch (err) {
@@ -783,10 +1013,22 @@ function renderPhotoGrid(container, photos) {
     pagePhotos.forEach(p => {
       container.querySelector(`.btn-analyze-again[data-id="${p.id}"]`).addEventListener('click', async () => {
         try {
+          // Use thumbnail (data URL) - apiClient.analyzeSingle now handles conversion
           const result = await apiClient.analyzeSingle(p.thumbnail, p.filename);
+          
+          // Extract category and confidence from response
+          let category = 'unknown';
+          let confidence = 0;
+          if (result.analysis) {
+            category = result.analysis.metadata?.construction_category || 'unknown';
+            if (result.analysis.classifications?.length > 0) {
+              confidence = result.analysis.classifications[0].confidence || 0;
+            }
+          }
+          
           stateManager.updatePhoto(p.id, {
-            category: result.category || 'unknown',
-            confidence: result.confidence || 0,
+            category: category,
+            confidence: confidence,
             error: null
           });
           notifications.success(`Re-analysis complete for ${p.filename}`);
@@ -806,7 +1048,7 @@ function renderPhotoGrid(container, photos) {
 }
 
 /**
- * Set up interactive feedback UI for demo
+ * Set up interactive feedback UI with GitHub issue integration
  */
 function setupInteractiveFeedbackUI() {
   const feedbackSection = document.getElementById('feedback-section');
@@ -816,12 +1058,12 @@ function setupInteractiveFeedbackUI() {
     <div class="section-header">
       <div>
         <h2>Interactive Feedback</h2>
-        <p class="section-subtitle">Share quick notes, issues, and improvement ideas.</p>
+        <p class="section-subtitle">Share quick notes, issues, and improvement ideas. Feedback is submitted as GitHub issues.</p>
       </div>
     </div>
     <div id="feedback-form" class="feedback-form">
       <label for="feedback-input">Leave your feedback</label>
-      <textarea id="feedback-input" rows="6" maxlength="${MAX_FEEDBACK_LENGTH}" placeholder="What did you notice or need help with?"></textarea>
+      <textarea id="feedback-input" rows="6" maxlength="${MAX_FEEDBACK_LENGTH}" placeholder="What did you notice or need help with? Your feedback will be submitted as a GitHub issue."></textarea>
       <div class="feedback-meta-row">
         <span id="feedback-count" class="feedback-count">0 / ${MAX_FEEDBACK_LENGTH}</span>
         <span id="feedback-status" class="feedback-status" role="status" aria-live="polite"></span>
@@ -830,6 +1072,7 @@ function setupInteractiveFeedbackUI() {
         <button id="submit-feedback-btn" class="btn btn-primary">Submit Feedback</button>
         <button id="clear-feedback-btn" class="btn btn-secondary">Clear</button>
       </div>
+      <div id="feedback-result" class="feedback-result" hidden></div>
     </div>
     <div id="feedback-list" class="feedback-list"></div>
   `;
@@ -840,6 +1083,7 @@ function setupInteractiveFeedbackUI() {
   const feedbackList = document.getElementById('feedback-list');
   const feedbackCount = document.getElementById('feedback-count');
   const feedbackStatus = document.getElementById('feedback-status');
+  const feedbackResult = document.getElementById('feedback-result');
 
   const autoResize = () => {
     feedbackInput.style.height = 'auto';
@@ -860,41 +1104,109 @@ function setupInteractiveFeedbackUI() {
     updateCount();
     autoResize();
     feedbackStatus.textContent = '';
+    feedbackResult.hidden = true;
   });
 
-  submitFeedbackBtn.addEventListener('click', () => {
+  submitFeedbackBtn.addEventListener('click', async () => {
     const text = feedbackInput.value.trim();
     if (!text) {
       notifications.warning('Feedback cannot be empty');
       return;
     }
-    // Save feedback to stateManager
-    const feedbackItem = {
-      id: crypto.randomUUID(),
-      text,
-      timestamp: Date.now()
+
+    // Disable button and show loading state
+    submitFeedbackBtn.disabled = true;
+    submitFeedbackBtn.textContent = 'Submitting...';
+    feedbackStatus.textContent = 'Submitting feedback to GitHub...';
+    feedbackResult.hidden = true;
+
+    // Get current system status
+    const apiStatusEl = document.getElementById('api-status');
+    const backendInfoEl = document.getElementById('backend-info');
+    const systemStatus = {
+      api_status: apiStatusEl?.textContent || 'Unknown',
+      backend_info: backendInfoEl?.textContent || 'Unknown'
     };
-    stateManager.addFeedback(feedbackItem);
-    addFeedbackItem(feedbackItem);
-    feedbackInput.value = '';
-    updateCount();
-    feedbackStatus.textContent = 'Thanks! Your feedback was recorded.';
-    notifications.success('Feedback submitted successfully');
+
+    try {
+      // Submit feedback to backend (creates GitHub issue)
+      const result = await apiClient.submitFeedback(text, systemStatus);
+
+      if (result.success) {
+        // Save feedback locally
+        const feedbackItem = {
+          id: crypto.randomUUID(),
+          text,
+          timestamp: Date.now(),
+          issueUrl: result.issue_url,
+          issueNumber: result.issue_number
+        };
+        stateManager.addFeedback(feedbackItem);
+        addFeedbackItem(feedbackItem);
+
+        // Clear form and show success
+        feedbackInput.value = '';
+        updateCount();
+        feedbackStatus.textContent = '';
+        
+        // Show GitHub issue link
+        feedbackResult.innerHTML = `
+          <div class="feedback-success">
+            <span class="success-icon">✓</span>
+            <span>Feedback submitted! </span>
+            <a href="${result.issue_url}" target="_blank" rel="noopener noreferrer" class="github-link">
+              View issue #${result.issue_number} on GitHub
+            </a>
+          </div>
+        `;
+        feedbackResult.hidden = false;
+        
+        notifications.success(`Feedback submitted as GitHub issue #${result.issue_number}`);
+      } else {
+        throw new Error(result.message || 'Failed to submit feedback');
+      }
+    } catch (error) {
+      console.error('Feedback submission error:', error);
+      feedbackStatus.textContent = '';
+      
+      // Show error message
+      feedbackResult.innerHTML = `
+        <div class="feedback-error">
+          <span class="error-icon">✗</span>
+          <span>Failed to submit: ${error.message}</span>
+        </div>
+      `;
+      feedbackResult.hidden = false;
+      
+      notifications.error(`Failed to submit feedback: ${error.message}`);
+    } finally {
+      // Re-enable button
+      submitFeedbackBtn.disabled = false;
+      submitFeedbackBtn.textContent = 'Submit Feedback';
+    }
   });
 
   clearFeedbackBtn.addEventListener('click', () => {
     feedbackInput.value = '';
     updateCount();
     autoResize();
+    feedbackResult.hidden = true;
   });
 
   function addFeedbackItem(item) {
     const div = document.createElement('div');
     div.className = 'feedback-item';
+    
+    // Include GitHub link if available
+    const githubLink = item.issueUrl 
+      ? `<a href="${item.issueUrl}" target="_blank" rel="noopener noreferrer" class="feedback-github-link">Issue #${item.issueNumber}</a>`
+      : '';
+    
     div.innerHTML = `
       <div class="feedback-text">${item.text}</div>
       <div class="feedback-meta">
         <span class="feedback-timestamp">${new Date(item.timestamp).toLocaleString()}</span>
+        ${githubLink}
         <button class="btn btn-danger btn-delete-feedback" data-id="${item.id}">Delete</button>
       </div>
     `;

@@ -124,48 +124,27 @@ class APIClient {
   }
 
   /**
-   * Analyze a single image
-   * @param {string} imageBase64 - Base64 encoded image data
-   * @param {string} filename - Original filename of the image
+   * Analyze a single image using multipart file upload
+   * @param {File|Blob} file - The image file to analyze
+   * @param {string} filename - Original filename (used if file is a Blob)
    * @returns {Promise<Object>} Analysis result
    */
-  async analyzeSingle(imageBase64, filename) {
-    return this.retryRequest(async () => {
-      const response = await this.client.post(API_CONFIG.ENDPOINTS.ANALYZE, {
-        image: imageBase64,
-        filename: filename
-      });
-      return response.data;
-    });
-  }
-
-  /**
-   * Analyze multiple images in a batch (optimized for GPU)
-   * @param {Array<Object>} images - Array of {image: base64, filename: string}
-   * @returns {Promise<Object>} Batch analysis results
-   */
-  async analyzeBatch(images) {
-    return this.retryRequest(async () => {
-      const response = await this.client.post(API_CONFIG.ENDPOINTS.ANALYZE_BATCH, {
-        images: images,
-        batch_size: API_CONFIG.BATCH_SIZE
-      });
-      return response.data;
-    });
-  }
-
-  /**
-   * Analyze a single image file (multipart upload)
-   * @param {File} file - The image file to analyze
-   * @param {string} sessionId - Optional session ID for tracking
-   * @returns {Promise<Object>} Analysis result
-   */
-  async analyze(file, sessionId = null) {
+  async analyzeSingle(file, filename = null) {
     return this.retryRequest(async () => {
       const formData = new FormData();
-      formData.append('file', file);
-      if (sessionId) {
-        formData.append('session_id', sessionId);
+      
+      // Handle both File objects and Blobs
+      if (file instanceof File) {
+        formData.append('file', file);
+      } else if (file instanceof Blob) {
+        // If it's a Blob, we need to give it a filename
+        formData.append('file', file, filename || 'image.jpg');
+      } else if (typeof file === 'string' && file.startsWith('data:')) {
+        // Handle base64 data URLs - convert to Blob
+        const blob = await this.dataURLtoBlob(file);
+        formData.append('file', blob, filename || 'image.jpg');
+      } else {
+        throw new Error('Invalid file format. Expected File, Blob, or base64 data URL.');
       }
       
       const response = await this.client.post(API_CONFIG.ENDPOINTS.ANALYZE, formData, {
@@ -175,6 +154,57 @@ class APIClient {
       });
       return response.data;
     });
+  }
+
+  /**
+   * Analyze multiple images in a batch using multipart file upload (optimized for GPU)
+   * @param {Array<{file: File|Blob, filename: string}>} files - Array of file objects
+   * @returns {Promise<Object>} Batch analysis results
+   */
+  async analyzeBatch(files) {
+    return this.retryRequest(async () => {
+      const formData = new FormData();
+      
+      for (const item of files) {
+        const file = item.file || item;
+        const filename = item.filename || (file instanceof File ? file.name : 'image.jpg');
+        
+        if (file instanceof File || file instanceof Blob) {
+          formData.append('files', file, filename);
+        } else if (typeof file === 'string' && file.startsWith('data:')) {
+          // Handle base64 data URLs - convert to Blob
+          const blob = await this.dataURLtoBlob(file);
+          formData.append('files', blob, filename);
+        }
+      }
+      
+      const response = await this.client.post(API_CONFIG.ENDPOINTS.ANALYZE_BATCH, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data'
+        }
+      });
+      return response.data;
+    });
+  }
+
+  /**
+   * Convert a data URL to a Blob
+   * @param {string} dataURL - Base64 data URL
+   * @returns {Promise<Blob>} Blob object
+   */
+  async dataURLtoBlob(dataURL) {
+    const response = await fetch(dataURL);
+    return response.blob();
+  }
+
+  /**
+   * Analyze a single image file (multipart upload) - alias for analyzeSingle
+   * @param {File} file - The image file to analyze
+   * @param {string} sessionId - Optional session ID for tracking (not used by backend)
+   * @returns {Promise<Object>} Analysis result
+   */
+  async analyze(file, sessionId = null) {
+    return this.analyzeSingle(file, file.name);
   }
 
   /**
@@ -200,6 +230,22 @@ class APIClient {
    */
   resetRequestTimeout() {
     this.client.defaults.timeout = API_CONFIG.TIMEOUT;
+  }
+
+  /**
+   * Submit user feedback to create a GitHub issue
+   * @param {string} feedback - The feedback text
+   * @param {Object} systemStatus - Optional system status info
+   * @returns {Promise<Object>} Response with issue URL and number
+   */
+  async submitFeedback(feedback, systemStatus = null) {
+    return this.retryRequest(async () => {
+      const response = await this.client.post(API_CONFIG.ENDPOINTS.FEEDBACK, {
+        feedback,
+        system_status: systemStatus
+      });
+      return response.data;
+    }, 1); // Only 1 retry for feedback submission
   }
 }
 

@@ -73,6 +73,11 @@ class StateManager {
       this.notifyListeners();
     }
   }
+
+  removePhoto(id) {
+    this.state.photos = this.state.photos.filter(photo => photo.id !== id);
+    this.notifyListeners();
+  }
   
   getPhotosByCategory(category) {
     return this.state.photos.filter(p => p.category === category);

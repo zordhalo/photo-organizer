@@ -10,7 +10,7 @@ import { connectionManager } from './connectionManager';
 class AnalysisService {
     /**
      * Analyze a single photo with graceful degradation and retry/fallback logic
-     * @param {Object} photo - Photo object with base64 and filename
+     * @param {Object} photo - Photo object with file/base64 and filename
      * @returns {Promise<Object>} Analysis result
      */
     async analyzeWithGracefulDegradation(photo) {
@@ -25,7 +25,9 @@ class AnalysisService {
       while (attempts < 3) {
         try {
           if (connectionManager.isConnected && !fallbackService.isEnabled()) {
-            const result = await apiClient.analyzeSingle(photo.base64, photo.filename);
+            // Use file if available, otherwise fall back to base64/previewUrl
+            const fileOrData = photo.file || photo.base64 || photo.previewUrl;
+            const result = await apiClient.analyzeSingle(fileOrData, photo.filename);
             return {
               ...result,
               filename: photo.filename,
@@ -99,9 +101,9 @@ class AnalysisService {
           }
 
           try {
-            // Format batch for API
+            // Format batch for API - use file if available, otherwise base64/previewUrl
             const formattedBatch = batch.map(photo => ({
-              image: photo.base64,
+              file: photo.file || photo.base64 || photo.previewUrl,
               filename: photo.filename
             }));
 
@@ -173,12 +175,14 @@ class AnalysisService {
 
   /**
    * Analyze a single photo with fallback support
-   * @param {Object} photo - Photo object with base64 and filename
+   * @param {Object} photo - Photo object with file/base64 and filename
    * @returns {Promise<Object>} Analysis result
    */
   async analyzeSingleWithFallback(photo) {
     try {
-      const result = await apiClient.analyzeSingle(photo.base64, photo.filename);
+      // Use file if available, otherwise fall back to base64/previewUrl
+      const fileOrData = photo.file || photo.base64 || photo.previewUrl;
+      const result = await apiClient.analyzeSingle(fileOrData, photo.filename);
       return {
         ...result,
         filename: photo.filename,

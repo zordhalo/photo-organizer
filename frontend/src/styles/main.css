@@ -746,3 +746,135 @@ textarea:focus-visible {
     flex-direction: column;
   }
 }
+
+/* =====================
+   Upload Queue Processing States
+   ===================== */
+.queue-item.processing {
+  border: 2px solid var(--color-primary);
+  background-color: rgba(37, 99, 235, 0.1);
+  animation: pulse-border 1.5s ease-in-out infinite;
+}
+
+.queue-item.completed {
+  opacity: 0.7;
+  border: 1px solid var(--color-success);
+  background-color: rgba(34, 197, 94, 0.1);
+}
+
+.queue-item.pending {
+  opacity: 0.5;
+}
+
+@keyframes pulse-border {
+  0%, 100% {
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.4);
+  }
+  50% {
+    border-color: #60a5fa;
+    box-shadow: 0 0 8px 2px rgba(37, 99, 235, 0.3);
+  }
+}
+
+/* Queue Item Status Indicator */
+.queue-item-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+}
+
+.status-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  font-size: 1rem;
+}
+
+.status-icon.status-complete {
+  background-color: var(--color-success);
+  color: white;
+  font-weight: bold;
+}
+
+.status-icon.status-active {
+  background-color: var(--color-primary);
+  color: white;
+}
+
+.status-icon.status-waiting {
+  background-color: var(--bg-tertiary);
+  color: var(--text-muted);
+  border: 2px solid var(--text-muted);
+}
+
+/* Spinner for active processing */
+.spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Queue Loading State */
+.queue-loading {
+  padding: var(--spacing-lg);
+  text-align: center;
+  color: var(--text-secondary);
+  background-color: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+  margin-top: var(--spacing-md);
+}
+
+/* Queue Loading Progress Bar */
+.queue-loading-progress {
+  padding: var(--spacing-lg);
+  background-color: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+  margin-top: var(--spacing-md);
+}
+
+.loading-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--spacing-sm);
+}
+
+.loading-label {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.loading-count {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.loading-bar-wrapper {
+  width: 100%;
+  height: 8px;
+  background-color: var(--bg-primary);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.loading-bar-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--color-primary), #8b5cf6);
+  border-radius: 4px;
+  transition: width 0.15s ease-out;
+}
