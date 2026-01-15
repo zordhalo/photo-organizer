@@ -7,6 +7,7 @@ class StateManager {
       photos: [],
       categories: {},
       lastAnalyzed: null,
+      feedback: [],
       settings: {
         batchSize: 16,
         autoSave: true,
@@ -52,6 +53,16 @@ class StateManager {
   addPhoto(photo) {
     this.state.photos.push(photo);
     this.state.session.photosAnalyzed++;
+    this.notifyListeners();
+  }
+
+  addFeedback(item) {
+    this.state.feedback.unshift(item);
+    this.notifyListeners();
+  }
+
+  removeFeedback(id) {
+    this.state.feedback = this.state.feedback.filter(item => item.id !== id);
     this.notifyListeners();
   }
   

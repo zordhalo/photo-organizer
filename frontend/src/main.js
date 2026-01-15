@@ -22,36 +22,89 @@ let errorStates = {};
 let filterCategory = 'all';
 let sortBy = 'confidence';
 let analysisPaused = false;
+const MAX_FEEDBACK_LENGTH = 500;
 
 // Drag & Drop and Upload Queue UI
 function setupUploadUI() {
-  const uploadSection = document.createElement('section');
-  uploadSection.className = 'upload-section';
+  const uploadSection = document.getElementById('upload-section');
+  if (!uploadSection) return;
+
   uploadSection.innerHTML = `
-    <h2>Upload Photos</h2>
-    <div id="drop-zone" class="drop-zone">Drag & drop files or folders here</div>
+    <div class="section-header">
+      <div>
+        <h2>Upload Photos</h2>
+        <p class="section-subtitle">Drag files here or browse to start an analysis run.</p>
+      </div>
+    </div>
+    <div id="drop-zone" class="drop-zone" tabindex="0" role="button" aria-label="Upload photos">
+      <input id="file-input" class="file-input" type="file" accept="image/*" multiple />
+      <div class="drop-zone-content">
+        <div class="drop-zone-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" role="presentation">
+            <path d="M12 3l4 4h-3v6h-2V7H8l4-4zm-6 14h12v2H6v-2z"></path>
+          </svg>
+        </div>
+        <div class="drop-zone-text">
+          <p id="drop-zone-title" class="drop-zone-title">Drag & drop files or folders here</p>
+          <p class="drop-zone-subtitle">Images only. Max file size ${formatBytes(APP_CONFIG.MAX_FILE_SIZE)}.</p>
+        </div>
+        <div class="drop-zone-actions">
+          <button id="browse-files-btn" class="btn btn-secondary" type="button">Browse files</button>
+        </div>
+      </div>
+    </div>
     <div id="upload-queue-container"></div>
   `;
-  document.querySelector('.main').prepend(uploadSection);
 
   const dropZone = document.getElementById('drop-zone');
+  const dropZoneTitle = document.getElementById('drop-zone-title');
+  const browseButton = document.getElementById('browse-files-btn');
+  const fileInput = document.getElementById('file-input');
   const uploadQueueContainer = document.getElementById('upload-queue-container');
 
+  const openFileDialog = () => fileInput.click();
+
+  browseButton.addEventListener('click', (event) => {
+    event.stopPropagation();
+    openFileDialog();
+  });
+
+  dropZone.addEventListener('click', () => {
+    openFileDialog();
+  });
+
+  dropZone.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      openFileDialog();
+    }
+  });
+
+  fileInput.addEventListener('change', (event) => {
+    if (event.target.files?.length) {
+      handleFiles(event.target.files);
+    }
+    fileInput.value = '';
+  });
+
   // Drag & drop events
-  dropZone.addEventListener('dragover', (e) => {
-    e.preventDefault();
+  dropZone.addEventListener('dragover', (event) => {
+    event.preventDefault();
     dropZone.classList.add('drag-over');
-    dropZone.textContent = `Release to upload (${e.dataTransfer.items.length} files)`;
+    const count = event.dataTransfer.items?.length || event.dataTransfer.files?.length || 0;
+    dropZoneTitle.textContent = count
+      ? `Release to upload ${count} file${count === 1 ? '' : 's'}`
+      : 'Release to upload files';
   });
   dropZone.addEventListener('dragleave', () => {
     dropZone.classList.remove('drag-over');
-    dropZone.textContent = 'Drag & drop files or folders here';
+    dropZoneTitle.textContent = 'Drag & drop files or folders here';
   });
-  dropZone.addEventListener('drop', (e) => {
-    e.preventDefault();
+  dropZone.addEventListener('drop', (event) => {
+    event.preventDefault();
     dropZone.classList.remove('drag-over');
-    dropZone.textContent = 'Drag & drop files or folders here';
-    handleFiles(e.dataTransfer.files);
+    dropZoneTitle.textContent = 'Drag & drop files or folders here';
+    handleFiles(event.dataTransfer.files);
   });
 
   // Initial render
@@ -87,6 +140,12 @@ function renderUploadQueue(container) {
       queuedFiles.splice(idx, 1);
       renderUploadQueue(container);
     },
+    onReorder: (fromIndex, toIndex) => {
+      if (fromIndex === toIndex) return;
+      const [moved] = queuedFiles.splice(fromIndex, 1);
+      queuedFiles.splice(toIndex, 0, moved);
+      renderUploadQueue(container);
+    },
     onStartAnalysis: startBatchAnalysis,
     errorStates
   });
@@ -94,16 +153,9 @@ function renderUploadQueue(container) {
 }
 
 function setupPauseResumeUI() {
-  const pauseResumeBar = document.createElement('div');
-  pauseResumeBar.className = 'pause-resume-bar';
-  pauseResumeBar.innerHTML = `
-    <button id="pause-analysis-btn">Pause Analysis</button>
-    <button id="resume-analysis-btn" style="display:none;">Resume Analysis</button>
-  `;
-  document.querySelector('.main').prepend(pauseResumeBar);
-
   const pauseBtn = document.getElementById('pause-analysis-btn');
   const resumeBtn = document.getElementById('resume-analysis-btn');
+  if (!pauseBtn || !resumeBtn) return;
 
   pauseBtn.addEventListener('click', () => {
     analysisPaused = true;
@@ -123,12 +175,26 @@ function setupPauseResumeUI() {
 async function startBatchAnalysis() {
   // Send files to backend with sessionId
   try {
-    for (let i = 0; i < queuedFiles.length; i++) {
+    const total = queuedFiles.length;
+    const startedAt = Date.now();
+    if (progressTracker) {
+      progressTracker.show();
+    }
+    for (let i = 0; i < total; i++) {
       while (analysisPaused) {
         await new Promise(res => setTimeout(res, 500));
       }
       const result = await apiClient.analyze(queuedFiles[i].file, sessionId);
       handleAnalysisResults([result]);
+
+      const current = i + 1;
+      const percentage = total ? Math.round((current / total) * 100) : 0;
+      const elapsedSeconds = Math.max((Date.now() - startedAt) / 1000, 1);
+      const speed = (current / elapsedSeconds).toFixed(1);
+      const eta = total > current ? Math.ceil((total - current) / (current / elapsedSeconds)) : 0;
+      if (progressTracker) {
+        progressTracker.update({ current, total, percentage, speed, eta });
+      }
     }
     notifications.success('Batch upload and analysis complete');
     queuedFiles = [];
@@ -158,11 +224,10 @@ function handleAnalysisResults(results) {
 
 // Retry failed files UI
 function setupRetryFailedUI() {
-  const retryBar = document.createElement('div');
-  retryBar.className = 'retry-failed-bar';
-  retryBar.innerHTML = `<button id="retry-failed-btn">Retry Failed Files</button>`;
-  document.querySelector('.main').prepend(retryBar);
-  document.getElementById('retry-failed-btn').addEventListener('click', async () => {
+  const retryButton = document.getElementById('retry-failed-btn');
+  if (!retryButton) return;
+
+  retryButton.addEventListener('click', async () => {
     const failedPhotos = stateManager.getState().photos.filter(p => p.error);
     if (!failedPhotos.length) {
       notifications.info('No failed files to retry');
@@ -185,11 +250,10 @@ function setupRetryFailedUI() {
 }
 
 function setupCSVExportUI() {
-  const exportBar = document.createElement('div');
-  exportBar.className = 'csv-export-bar';
-  exportBar.innerHTML = `<button id="export-csv-btn">Export Results (CSV)</button>`;
-  document.querySelector('.main').prepend(exportBar);
-  document.getElementById('export-csv-btn').addEventListener('click', () => {
+  const exportButton = document.getElementById('export-csv-btn');
+  if (!exportButton) return;
+
+  exportButton.addEventListener('click', () => {
     const photos = stateManager.getState().photos;
     if (!photos.length) {
       notifications.info('No results to export');
@@ -225,105 +289,136 @@ async function initApp() {
   app.innerHTML = `
     <div class="container">
       <header class="header">
-        <h1>${APP_CONFIG.APP_NAME}</h1>
-        <p class="version">v${APP_CONFIG.VERSION}</p>
+        <div class="header-title">
+          <h1>${APP_CONFIG.APP_NAME}</h1>
+          <p class="subtitle">Construction Photo Analyzer UI</p>
+        </div>
+        <div class="header-actions">
+          <button id="toggle-dev-panel" class="btn btn-secondary" type="button" aria-expanded="false">
+            Show developer tools
+          </button>
+        </div>
       </header>
       
       <main class="main">
-        <section class="status-section">
-          <h2>System Status</h2>
+        <section class="upload-section" id="upload-section"></section>
+
+        <section class="photo-grid-section" id="photo-grid-section"></section>
+
+        <section class="status-section" id="status-section">
+          <div class="status-header">
+            <div>
+              <h2>System Status</h2>
+              <p class="section-subtitle">Live backend health and configuration snapshot.</p>
+            </div>
+            <div id="connection-status-container"></div>
+          </div>
           <div class="status-card">
             <div class="status-item">
-              <span class="status-label">API Server:</span>
+              <span class="status-label">API Server</span>
               <span class="status-value ${statusClass}" id="api-status">${statusText}</span>
             </div>
             <div class="status-item">
-              <span class="status-label">Backend Info:</span>
+              <span class="status-label">Backend Info</span>
               <span class="status-value" id="backend-info">Checking...</span>
             </div>
             <div class="status-item">
-              <span class="status-label">API URL:</span>
+              <span class="status-label">API URL</span>
               <span class="status-value">${API_CONFIG.BASE_URL}</span>
             </div>
             <div class="status-item">
-              <span class="status-label">Max File Size:</span>
+              <span class="status-label">Max File Size</span>
               <span class="status-value">${formatBytes(APP_CONFIG.MAX_FILE_SIZE)}</span>
             </div>
             <div class="status-item">
-              <span class="status-label">Batch Size:</span>
+              <span class="status-label">Batch Size</span>
               <span class="status-value">${API_CONFIG.BATCH_SIZE} images</span>
             </div>
             <div class="status-item">
-              <span class="status-label">Last Check:</span>
+              <span class="status-label">Last Check</span>
               <span class="status-value" id="last-check">Never</span>
             </div>
           </div>
         </section>
-        
-        <section class="endpoints-section">
-          <h2>Available Endpoints</h2>
-          <ul class="endpoints-list">
-            ${Object.entries(API_CONFIG.ENDPOINTS).map(([name, path]) => `
-              <li class="endpoint-item">
-                <code>${name}</code>
-                <span>${API_CONFIG.BASE_URL}${path}</span>
-              </li>
-            `).join('')}
-          </ul>
-        </section>
-        
-        <section class="config-section">
-          <h2>Configuration Loaded ✓</h2>
-          <p>Phase 2: API Client Integration complete. Connection monitoring is active.</p>
-          <div class="features-list">
-            <div class="feature-item ${APP_CONFIG.ENABLE_FALLBACK ? 'enabled' : 'disabled'}">
-              Fallback Mode: ${APP_CONFIG.ENABLE_FALLBACK ? 'Enabled' : 'Disabled'}
-            </div>
-            <div class="feature-item ${APP_CONFIG.ENABLE_BATCH_UPLOAD ? 'enabled' : 'disabled'}">
-              Batch Upload: ${APP_CONFIG.ENABLE_BATCH_UPLOAD ? 'Enabled' : 'Disabled'}
-            </div>
-            <div class="feature-item ${APP_CONFIG.ENABLE_DRAG_DROP ? 'enabled' : 'disabled'}">
-              Drag & Drop: ${APP_CONFIG.ENABLE_DRAG_DROP ? 'Enabled' : 'Disabled'}
+
+        <section class="feedback-section" id="feedback-section"></section>
+
+        <section class="developer-section" id="developer-section">
+          <div class="developer-header">
+            <h2>Developer Tools</h2>
+            <p class="section-subtitle">Diagnostics and API testing utilities.</p>
+          </div>
+          <div class="developer-content" id="developer-content" hidden>
+            <div class="developer-grid">
+              <div class="developer-card endpoints-section">
+                <h3>Available Endpoints</h3>
+                <ul class="endpoints-list">
+                  ${Object.entries(API_CONFIG.ENDPOINTS).map(([name, path]) => `
+                    <li class="endpoint-item">
+                      <code>${name}</code>
+                      <span>${API_CONFIG.BASE_URL}${path}</span>
+                    </li>
+                  `).join('')}
+                </ul>
+              </div>
+
+              <div class="developer-card config-section">
+                <h3>Configuration Loaded</h3>
+                <p>Phase 2: API Client Integration complete. Connection monitoring is active.</p>
+                <div class="features-list">
+                  <div class="feature-item ${APP_CONFIG.ENABLE_FALLBACK ? 'enabled' : 'disabled'}">
+                    Fallback Mode: ${APP_CONFIG.ENABLE_FALLBACK ? 'Enabled' : 'Disabled'}
+                  </div>
+                  <div class="feature-item ${APP_CONFIG.ENABLE_BATCH_UPLOAD ? 'enabled' : 'disabled'}">
+                    Batch Upload: ${APP_CONFIG.ENABLE_BATCH_UPLOAD ? 'Enabled' : 'Disabled'}
+                  </div>
+                  <div class="feature-item ${APP_CONFIG.ENABLE_DRAG_DROP ? 'enabled' : 'disabled'}">
+                    Drag & Drop: ${APP_CONFIG.ENABLE_DRAG_DROP ? 'Enabled' : 'Disabled'}
+                  </div>
+                </div>
+              </div>
+
+              <div class="developer-card api-test-section">
+                <h3>API Client Test</h3>
+                <div class="button-group">
+                  <button id="test-health-btn" class="btn btn-primary">Test Health Check</button>
+                  <button id="test-stats-btn" class="btn btn-secondary">Get Stats</button>
+                  <button id="test-analysis-btn" class="btn btn-secondary">Test Analysis</button>
+                  <button id="test-notifications-btn" class="btn btn-secondary">Test Notifications</button>
+                </div>
+                <div id="api-test-result" class="api-result"></div>
+              </div>
             </div>
           </div>
-        </section>
-        
-        <section class="api-test-section">
-          <h2>API Client Test</h2>
-          <div id="connection-status-container"></div>
-          <div id="progress-tracker-container"></div>
-          <div class="button-group">
-            <button id="test-health-btn" class="btn btn-primary">Test Health Check</button>
-            <button id="test-stats-btn" class="btn btn-secondary">Get Stats</button>
-            <button id="test-analysis-btn" class="btn btn-secondary">Test Analysis</button>
-            <button id="test-notifications-btn" class="btn btn-secondary">Test Notifications</button>
-          </div>
-          <div id="api-test-result" class="api-result"></div>
         </section>
       </main>
       
       <footer class="footer">
         <p>Construction Photo Analyzer - API Client Ready</p>
+        <p class="version">v${APP_CONFIG.VERSION}</p>
       </footer>
     </div>
   `;
   
   // Set up connection monitoring with real-time updates
   setupConnectionMonitoring();
-  
-  // Initialize Phase 3 components
-  initializeComponents();
-  
-  // Set up API test buttons
-  setupApiTestButtons();
-  
-  // Set up Upload UI
+
+  // Build primary UI sections
   setupUploadUI();
-  setupPauseResumeUI();
-  setupRetryFailedUI();
   setupPhotoGridUI();
   setupInteractiveFeedbackUI();
+
+  // Initialize components that depend on DOM nodes
+  initializeComponents();
+
+  // Set up API test buttons
+  setupApiTestButtons();
+
+  // Hook up action controls
+  setupPauseResumeUI();
+  setupRetryFailedUI();
   setupCSVExportUI();
+  setupDeveloperPanel();
 }
 
 /**
@@ -380,7 +475,8 @@ function updateConnectionStatus(isConnected, backendInfo) {
   const lastCheckElement = document.getElementById('last-check');
   
   if (statusElement) {
-    statusElement.textContent = isConnected ? 'Online' : 'Offline';
+    const statusText = isConnected ? 'Online' : 'Offline';
+    statusElement.textContent = statusText;
     statusElement.className = `status-value ${isConnected ? 'status-online' : 'status-offline'}`;
   }
   
@@ -530,12 +626,25 @@ function formatBytes(bytes) {
 }
 
 function setupPhotoGridUI() {
-  const gridSection = document.createElement('section');
-  gridSection.className = 'photo-grid-section';
+  const gridSection = document.getElementById('photo-grid-section');
+  if (!gridSection) return;
+
   gridSection.innerHTML = `
-    <h2>Photo Analysis Results</h2>
+    <div class="results-header">
+      <div>
+        <h2>Photo Analysis Results</h2>
+        <p class="section-subtitle">Review detections, confidence, and outputs.</p>
+      </div>
+      <div class="results-actions">
+        <button id="pause-analysis-btn" class="btn btn-secondary" type="button">Pause Analysis</button>
+        <button id="resume-analysis-btn" class="btn btn-secondary" type="button" style="display:none;">Resume Analysis</button>
+        <button id="retry-failed-btn" class="btn btn-secondary" type="button">Retry Failed</button>
+        <button id="export-csv-btn" class="btn btn-secondary" type="button">Export Results (CSV)</button>
+      </div>
+    </div>
+    <div id="progress-tracker-container" class="results-progress"></div>
     <div id="photo-filter-bar" class="photo-filter-bar">
-      <label>Filter by Category:</label>
+      <label for="category-filter">Filter by Category</label>
       <select id="category-filter">
         <option value="all">All</option>
         <option value="interior">Interior</option>
@@ -550,7 +659,7 @@ function setupPhotoGridUI() {
         <option value="doors">Doors</option>
         <option value="unknown">Unknown</option>
       </select>
-      <label>Sort by:</label>
+      <label for="sort-by">Sort by</label>
       <select id="sort-by">
         <option value="confidence">Confidence</option>
         <option value="filename">Filename</option>
@@ -559,7 +668,6 @@ function setupPhotoGridUI() {
     </div>
     <div id="photo-grid-container"></div>
   `;
-  document.querySelector('.main').prepend(gridSection);
 
   const categoryFilter = document.getElementById('category-filter');
   const sortBySelect = document.getElementById('sort-by');
@@ -577,6 +685,13 @@ function setupPhotoGridUI() {
     sortBy = sortBySelect.value;
     renderPhotoGrid(photoGridContainer, stateManager.getState().photos);
   });
+
+  stateManager.subscribe((state) => {
+    renderPhotoGrid(photoGridContainer, state.photos);
+    updateResultsActions(state.photos);
+  });
+
+  updateResultsActions(stateManager.getState().photos);
 }
 
 function renderPhotoGrid(container, photos) {
@@ -591,6 +706,28 @@ function renderPhotoGrid(container, photos) {
     filteredPhotos.sort((a, b) => a.filename.localeCompare(b.filename));
   } else if (sortBy === 'analyzedAt') {
     filteredPhotos.sort((a, b) => b.analyzedAt - a.analyzedAt);
+  }
+
+  if (!filteredPhotos.length) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" role="presentation">
+            <path d="M4 5h16a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1zm0 2v10h16V7H4zm4 2l2 2 3-3 4 4H6l2-3z"></path>
+          </svg>
+        </div>
+        <h3>No analysis results yet</h3>
+        <p>Upload photos to kick off analysis and see thumbnails, labels, and confidence scores here.</p>
+        <button class="btn btn-primary" type="button" id="empty-upload-cta">Upload photos</button>
+      </div>
+    `;
+    const emptyCta = container.querySelector('#empty-upload-cta');
+    if (emptyCta) {
+      emptyCta.addEventListener('click', () => {
+        document.getElementById('upload-section')?.scrollIntoView({ behavior: 'smooth' });
+      });
+    }
+    return;
   }
 
   // Paginate photos
@@ -672,13 +809,23 @@ function renderPhotoGrid(container, photos) {
  * Set up interactive feedback UI for demo
  */
 function setupInteractiveFeedbackUI() {
-  const feedbackSection = document.createElement('section');
-  feedbackSection.className = 'feedback-section';
+  const feedbackSection = document.getElementById('feedback-section');
+  if (!feedbackSection) return;
+
   feedbackSection.innerHTML = `
-    <h2>Interactive Feedback</h2>
+    <div class="section-header">
+      <div>
+        <h2>Interactive Feedback</h2>
+        <p class="section-subtitle">Share quick notes, issues, and improvement ideas.</p>
+      </div>
+    </div>
     <div id="feedback-form" class="feedback-form">
-      <label for="feedback-input">Leave your feedback:</label>
-      <textarea id="feedback-input" rows="4" placeholder="Enter your feedback here..."></textarea>
+      <label for="feedback-input">Leave your feedback</label>
+      <textarea id="feedback-input" rows="6" maxlength="${MAX_FEEDBACK_LENGTH}" placeholder="What did you notice or need help with?"></textarea>
+      <div class="feedback-meta-row">
+        <span id="feedback-count" class="feedback-count">0 / ${MAX_FEEDBACK_LENGTH}</span>
+        <span id="feedback-status" class="feedback-status" role="status" aria-live="polite"></span>
+      </div>
       <div class="button-group">
         <button id="submit-feedback-btn" class="btn btn-primary">Submit Feedback</button>
         <button id="clear-feedback-btn" class="btn btn-secondary">Clear</button>
@@ -686,16 +833,34 @@ function setupInteractiveFeedbackUI() {
     </div>
     <div id="feedback-list" class="feedback-list"></div>
   `;
-  document.querySelector('.main').prepend(feedbackSection);
 
   const feedbackInput = document.getElementById('feedback-input');
   const submitFeedbackBtn = document.getElementById('submit-feedback-btn');
   const clearFeedbackBtn = document.getElementById('clear-feedback-btn');
   const feedbackList = document.getElementById('feedback-list');
+  const feedbackCount = document.getElementById('feedback-count');
+  const feedbackStatus = document.getElementById('feedback-status');
+
+  const autoResize = () => {
+    feedbackInput.style.height = 'auto';
+    feedbackInput.style.height = `${feedbackInput.scrollHeight}px`;
+  };
+
+  const updateCount = () => {
+    feedbackCount.textContent = `${feedbackInput.value.length} / ${MAX_FEEDBACK_LENGTH}`;
+  };
 
   // Load saved feedback from stateManager
   const savedFeedback = stateManager.getState().feedback || [];
   savedFeedback.forEach(f => addFeedbackItem(f));
+
+  updateCount();
+  autoResize();
+  feedbackInput.addEventListener('input', () => {
+    updateCount();
+    autoResize();
+    feedbackStatus.textContent = '';
+  });
 
   submitFeedbackBtn.addEventListener('click', () => {
     const text = feedbackInput.value.trim();
@@ -712,11 +877,15 @@ function setupInteractiveFeedbackUI() {
     stateManager.addFeedback(feedbackItem);
     addFeedbackItem(feedbackItem);
     feedbackInput.value = '';
+    updateCount();
+    feedbackStatus.textContent = 'Thanks! Your feedback was recorded.';
     notifications.success('Feedback submitted successfully');
   });
 
   clearFeedbackBtn.addEventListener('click', () => {
     feedbackInput.value = '';
+    updateCount();
+    autoResize();
   });
 
   function addFeedbackItem(item) {
@@ -737,6 +906,36 @@ function setupInteractiveFeedbackUI() {
       div.remove();
       notifications.info('Feedback deleted');
     });
+  }
+}
+
+function setupDeveloperPanel() {
+  const toggleButton = document.getElementById('toggle-dev-panel');
+  const content = document.getElementById('developer-content');
+  if (!toggleButton || !content) return;
+
+  const setExpanded = (isExpanded) => {
+    content.hidden = !isExpanded;
+    toggleButton.setAttribute('aria-expanded', String(isExpanded));
+    toggleButton.textContent = isExpanded ? 'Hide developer tools' : 'Show developer tools';
+  };
+
+  toggleButton.addEventListener('click', () => {
+    setExpanded(content.hidden);
+  });
+
+  setExpanded(false);
+}
+
+function updateResultsActions(photos) {
+  const retryButton = document.getElementById('retry-failed-btn');
+  const exportButton = document.getElementById('export-csv-btn');
+  if (retryButton) {
+    const hasFailures = photos.some(photo => photo.error);
+    retryButton.disabled = !hasFailures;
+  }
+  if (exportButton) {
+    exportButton.disabled = photos.length === 0;
   }
 }
 

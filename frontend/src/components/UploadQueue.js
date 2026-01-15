@@ -9,8 +9,9 @@
  * @param {Object} props.errorStates - Object mapping filename to error message
  * @returns {HTMLElement} The upload queue DOM element
  */
-function UploadQueue({ files, onRemove, onStartAnalysis, errorStates }) {
+function UploadQueue({ files, onRemove, onReorder, onStartAnalysis, errorStates }) {
   const totalSize = files.reduce((sum, f) => sum + f.size, 0);
+  let draggingIndex = null;
 
   const container = document.createElement('div');
   container.className = 'upload-queue';
@@ -27,6 +28,39 @@ function UploadQueue({ files, onRemove, onStartAnalysis, errorStates }) {
   files.forEach((f, idx) => {
     const queueItem = document.createElement('div');
     queueItem.className = 'queue-item';
+    queueItem.draggable = true;
+    queueItem.dataset.index = idx;
+
+    queueItem.addEventListener('dragstart', (event) => {
+      draggingIndex = idx;
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', String(idx));
+      queueItem.classList.add('dragging');
+    });
+
+    queueItem.addEventListener('dragend', () => {
+      queueItem.classList.remove('dragging');
+    });
+
+    queueItem.addEventListener('dragover', (event) => {
+      event.preventDefault();
+      queueItem.classList.add('drag-over');
+    });
+
+    queueItem.addEventListener('dragleave', () => {
+      queueItem.classList.remove('drag-over');
+    });
+
+    queueItem.addEventListener('drop', (event) => {
+      event.preventDefault();
+      queueItem.classList.remove('drag-over');
+      const fromIndex = draggingIndex ?? Number(event.dataTransfer.getData('text/plain'));
+      const toIndex = Number(queueItem.dataset.index);
+      draggingIndex = null;
+      if (Number.isInteger(fromIndex) && Number.isInteger(toIndex) && onReorder) {
+        onReorder(fromIndex, toIndex);
+      }
+    });
 
     // Thumbnail
     const thumb = document.createElement('img');

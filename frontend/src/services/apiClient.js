@@ -155,6 +155,29 @@ class APIClient {
   }
 
   /**
+   * Analyze a single image file (multipart upload)
+   * @param {File} file - The image file to analyze
+   * @param {string} sessionId - Optional session ID for tracking
+   * @returns {Promise<Object>} Analysis result
+   */
+  async analyze(file, sessionId = null) {
+    return this.retryRequest(async () => {
+      const formData = new FormData();
+      formData.append('file', file);
+      if (sessionId) {
+        formData.append('session_id', sessionId);
+      }
+      
+      const response = await this.client.post(API_CONFIG.ENDPOINTS.ANALYZE, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data'
+        }
+      });
+      return response.data;
+    });
+  }
+
+  /**
    * Get system statistics
    * @returns {Promise<Object>} System stats including GPU info
    */
