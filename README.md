@@ -6,6 +6,7 @@
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.109.0-green)
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.1.2-red)
+[![MCP servers live](https://whobuildsagents.com/badge/advancelabs.dev.svg)](https://whobuildsagents.com/advancelabs.dev)
 
 ## 📋 Overview
 
